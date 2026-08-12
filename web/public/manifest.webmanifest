@@ -1,0 +1,19 @@
+{
+  "name": "Dinero 兩人日常帳",
+  "short_name": "Dinero",
+  "description": "兩個人的日常記帳，簡單、即時、不算誰欠誰。",
+  "lang": "zh-Hant",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f1ea",
+  "theme_color": "#f4f1ea",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
