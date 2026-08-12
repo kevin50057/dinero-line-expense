@@ -8,6 +8,7 @@ import {
 import { generatePublicId } from "../application/public-id.js";
 import { parseExpenseMessage, parseLedgerCommand } from "../domain/index.js";
 import type { ParsedExpense, TypedTag } from "../domain/index.js";
+import type { LineReplyMessage } from "../outbox/payload.js";
 import { processLedgerCommand } from "./process-ledger-command.js";
 
 const MAX_PUBLIC_ID_ATTEMPTS = 8;
@@ -308,6 +309,7 @@ async function processMessage(
       payload.replyTokenCiphertext,
       "ledger_command_result",
       commandResult.reply,
+      commandResult.message,
     );
     await finish(client, event, commandResult.outcome);
     return {
@@ -571,6 +573,7 @@ async function enqueueReply(
     | "ledger_onboarding"
     | "expense_edit_notice",
   text: string,
+  message?: LineReplyMessage,
 ): Promise<void> {
   if (replyTokenCiphertext === undefined || destinationRef === null) return;
   const credential = decodeCiphertext(replyTokenCiphertext);
@@ -583,7 +586,7 @@ async function enqueueReply(
                $7::timestamptz + interval '55 seconds')
      ON CONFLICT (ledger_id, source_webhook_event_id, purpose) DO NOTHING`,
     [event.ledger_id, event.webhook_event_id, purpose, destinationRef,
-      credential, JSON.stringify(lineTextReply(text)), event.received_at],
+      credential, JSON.stringify(message === undefined ? lineTextReply(text) : { messages: [message] }), event.received_at],
   );
 }
 

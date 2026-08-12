@@ -1089,3 +1089,43 @@ Then DB 跨 tag type 排他約束拒絕建立
 And 使用者輸入的 #食物 或 #午餐 只會解析成對應系統 tag
 And `本月 #午餐` 的語意唯一
 ```
+
+### A82 — 週與上月報表使用帳本時區的曆日界線
+
+```gherkin
+Given 帳本時區為 Asia/Taipei
+And LINE 事件時間是 2026-08-13（星期四）中午
+When 小明傳送「週報」、「本週」或「這週」
+Then 查詢區間為 2026-08-10 00:00 到 2026-08-17 00:00 的半開日期區間
+
+When 小明傳送「上週」
+Then 查詢區間為前一個星期一到本星期一
+
+When 小明傳送「上月」
+Then 查詢區間為 2026-07-01 到 2026-08-01
+```
+
+### A83 — 搜尋與分類排行是保留指令且不會誤入帳
+
+```gherkin
+When 小明傳送「找 牛肉麵」或「搜尋 牛肉麵」
+Then 回傳 description 包含「牛肉麵」的最近 20 筆 active 交易
+And `%`、`_`與反斜線只視為搜尋文字而非 SQL wildcard
+And 不建立項目為「找」或「搜尋」的新交易
+
+When 小明傳送「分類排行」或「排行」
+Then 回傳本月 active 交易依 category 金額降冪排列及占比
+And 每筆多標籤交易在總額中只計算一次
+```
+
+### A84 — 查詢使用安全且可降級的 LINE Flex Message
+
+```gherkin
+When 已授權成員傳送「說明」
+Then LINE 回覆為最多三張 bubble 的 carousel Flex Message
+And 卡片包含可點擊的 message action 常用指令
+
+When 已授權成員查詢單筆、最近、期間、搜尋或排行
+Then LINE 回覆為 Flex bubble 且 altText 包含等價純文字摘要
+And outbound validator 拒絕未知元件、未知欄位、任意 URI action、超過 12 張 bubble 或超過 50 KB 的 Flex JSON
+```

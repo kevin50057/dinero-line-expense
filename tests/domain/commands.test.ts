@@ -9,6 +9,15 @@ describe("parseLedgerCommand", () => {
     ["最近 5", { kind: "recent", limit: 5 }],
     ["本月 共同", { kind: "period", period: "month", filter: { kind: "shared" } }],
     ["本月 #約會", { kind: "period", period: "month", filter: { kind: "tag", name: "約會" } }],
+    ["週報", { kind: "period", period: "week", filter: { kind: "all" } }],
+    ["本週 共同", { kind: "period", period: "week", filter: { kind: "shared" } }],
+    ["上週", { kind: "period", period: "last_week", filter: { kind: "all" } }],
+    ["月報", { kind: "period", period: "month", filter: { kind: "all" } }],
+    ["上月", { kind: "period", period: "last_month", filter: { kind: "all" } }],
+    ["找 牛肉麵", { kind: "search", keyword: "牛肉麵" }],
+    ["搜尋 約會 晚餐", { kind: "search", keyword: "約會 晚餐" }],
+    ["分類排行", { kind: "ranking" }],
+    ["幫助", { kind: "help" }],
     ["取消 #K7M2Q9TX", { kind: "void", publicId: "K7M2Q9TX" }],
     ["還原 #K7M2Q9TX", { kind: "restore", publicId: "K7M2Q9TX" }],
     ["改 #K7M2Q9TX 金額 180", { kind: "update", publicId: "K7M2Q9TX", change: { field: "amount", value: 180 } }],
@@ -19,7 +28,7 @@ describe("parseLedgerCommand", () => {
     expect(parseLedgerCommand(input)).toEqual({ kind: "command", command: expected });
   });
 
-  it.each(["最近 0", "最近 21", "最近 五", "改 #K7M2Q9TX 金額 -1", "本月 不知道", "取消 150"])(
+  it.each(["最近 0", "最近 21", "最近 五", "找", "搜尋 ", "改 #K7M2Q9TX 金額 -1", "本月 不知道", "取消 150"])(
     "keeps malformed reserved input out of create: %s",
     (input) => expect(parseLedgerCommand(input).kind).toBe("invalid"),
   );

@@ -151,10 +151,11 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
     const after = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM expense_transaction");
     expect(after.rows[0]?.count).toBe(before.rows[0]?.count);
-    const reply = await pool.query<{ payload: { messages: Array<{ text: string }> } }>(
+    const reply = await pool.query<{ payload: { messages: Array<{ type: string; altText: string }> } }>(
       `SELECT payload_json AS payload FROM outbox_message WHERE source_webhook_event_id='E-recent'`,
     );
-    expect(reply.rows[0]?.payload.messages[0]?.text).toContain("最近 2 筆");
+    expect(reply.rows[0]?.payload.messages[0]).toMatchObject({ type: "flex" });
+    expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("最近 2 筆");
   });
 
   it("updates an owned personal expense and records exactly one before/after audit", async () => {
@@ -200,10 +201,34 @@ describeWithPostgres("processNextInboundEvent integration", () => {
   it("reports a unique monthly total when an expense has multiple tags", async () => {
     await insertTextEvent("E-month", "M-month", "本月");
     expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
-    const reply = await pool.query<{ payload: { messages: Array<{ text: string }> } }>(
+    const reply = await pool.query<{ payload: { messages: Array<{ type: string; altText: string }> } }>(
       `SELECT payload_json AS payload FROM outbox_message WHERE source_webhook_event_id='E-month'`,
     );
-    expect(reply.rows[0]?.payload.messages[0]?.text).toContain("2 筆，合計 260 元");
+    expect(reply.rows[0]?.payload.messages[0]).toMatchObject({ type: "flex" });
+    expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("2 筆，合計 260 元");
+  });
+
+  it("returns Flex cards for weekly reports, search and category ranking", async () => {
+    const commands = [
+      ["E-week", "週報", "本週"],
+      ["E-search", "找 咖啡", "搜尋「咖啡」"],
+      ["E-ranking", "分類排行", "分類排行"],
+      ["E-help", "說明", "記帳：牛肉麵"],
+    ] as const;
+    for (const [eventId, text, expectedAlt] of commands) {
+      await insertTextEvent(eventId, `M-${eventId}`, text);
+      expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+      const reply = await pool.query<{ type: string; alt_text: string; contents_type: string }>(
+        `SELECT payload_json->'messages'->0->>'type' AS type,
+                payload_json->'messages'->0->>'altText' AS alt_text,
+                payload_json->'messages'->0->'contents'->>'type' AS contents_type
+           FROM outbox_message WHERE source_webhook_event_id=$1`,
+        [eventId],
+      );
+      expect(reply.rows[0]?.type).toBe("flex");
+      expect(reply.rows[0]?.alt_text).toContain(expectedAlt);
+      expect(["bubble", "carousel"]).toContain(reply.rows[0]?.contents_type);
+    }
   });
 
   it("applies typed field and custom-tag updates while preserving invariants", async () => {

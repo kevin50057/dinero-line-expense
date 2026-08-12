@@ -44,4 +44,37 @@ describe("parseLineReplyPayload", () => {
       parseLineReplyPayload({ messages: [{ type: "text", text }] }),
     ).toEqual({ messages: [{ type: "text", text }] });
   });
+
+  it("accepts the allow-listed Flex Message card subset", () => {
+    const input = {
+      messages: [{
+        type: "flex",
+        altText: "本月支出 1,280 元",
+        contents: {
+          type: "bubble",
+          size: "kilo",
+          body: {
+            type: "box",
+            layout: "vertical",
+            paddingAll: "20px",
+            contents: [
+              { type: "text", text: "本月支出", weight: "bold", wrap: true },
+              { type: "separator", margin: "md", color: "#EEEEEE" },
+              { type: "button", style: "secondary", height: "sm", action: { type: "message", label: "最近紀錄", text: "最近 5" } },
+            ],
+          },
+        },
+      }],
+    };
+    expect(parseLineReplyPayload(input)).toEqual(input);
+  });
+
+  it.each([
+    { messages: [{ type: "flex", altText: "", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [] } } }] },
+    { messages: [{ type: "flex", altText: "ok", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [], secret: "no" } } }] },
+    { messages: [{ type: "flex", altText: "ok", contents: { type: "carousel", contents: [] } }] },
+    { messages: [{ type: "flex", altText: "ok", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [{ type: "button", action: { type: "uri", label: "no", uri: "https://example.com" } }] } } }] },
+  ])("rejects expanded or malformed Flex payloads: %j", (input) => {
+    expect(() => parseLineReplyPayload(input)).toThrow(InvalidLineReplyPayloadError);
+  });
 });

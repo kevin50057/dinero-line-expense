@@ -7,7 +7,9 @@ import type { CategoryCode, MealCode } from "./types.js";
 export type LedgerCommand =
   | { readonly kind: "detail"; readonly publicId: string }
   | { readonly kind: "recent"; readonly limit: number }
-  | { readonly kind: "period"; readonly period: "today" | "yesterday" | "month"; readonly filter: CommandFilter }
+  | { readonly kind: "period"; readonly period: "today" | "yesterday" | "week" | "last_week" | "month" | "last_month"; readonly filter: CommandFilter }
+  | { readonly kind: "search"; readonly keyword: string }
+  | { readonly kind: "ranking" }
   | { readonly kind: "update"; readonly publicId: string; readonly change: UpdateChange }
   | { readonly kind: "tags"; readonly operation: "add" | "remove"; readonly publicId: string; readonly tags: readonly string[] }
   | { readonly kind: "void" | "restore"; readonly publicId: string }
@@ -41,7 +43,7 @@ const MAX_TAGS = 10;
 /** Parses the reserved command language before create-expense parsing. */
 export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   const text = input.normalize("NFKC").trim().replace(/\s+/gu, " ");
-  if (text === "說明") return command({ kind: "help" });
+  if (text === "說明" || text === "幫助" || text === "help") return command({ kind: "help" });
   if (text === "分類") return command({ kind: "categories" });
   if (text === "標籤") return command({ kind: "tags_help" });
 
@@ -58,13 +60,27 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
     return command({ kind: "recent", limit });
   }
 
-  match = /^(今天|昨天|本月)(?: (\S+))?$/u.exec(text);
+  match = /^(找|搜尋)(?: (.+))?$/u.exec(text);
+  if (match) {
+    const keyword = match[2]?.trim() ?? "";
+    if (keyword.length === 0 || [...keyword].length > 30) return invalid("搜尋關鍵字必須是 1 到 30 個字。範例：找 牛肉麵");
+    return command({ kind: "search", keyword });
+  }
+
+  if (text === "排行" || text === "分類排行") return command({ kind: "ranking" });
+
+  match = /^(今天|今日|昨天|週報|這週|本週|上週|本月|月報|上月)(?: (\S+))?$/u.exec(text);
   if (match) {
     const filter = parseFilter(match[2]);
     if (filter === null) return invalid("查詢篩選可用：共同、個人或 #標籤。");
+    const periodByLabel = {
+      今天: "today", 今日: "today", 昨天: "yesterday",
+      週報: "week", 這週: "week", 本週: "week", 上週: "last_week",
+      本月: "month", 月報: "month", 上月: "last_month",
+    } as const;
     return command({
       kind: "period",
-      period: match[1] === "今天" ? "today" : match[1] === "昨天" ? "yesterday" : "month",
+      period: periodByLabel[match[1] as keyof typeof periodByLabel],
       filter,
     });
   }
@@ -89,7 +105,7 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   // 今天／昨天 are also valid create prefixes (for example
   // 「昨天 牛肉麵 150」), so only their fully matched query forms above are
   // commands. Other reserved verbs must never fall through to create.
-  if (/^(?:查|最近|本月|改|加|移除|取消|還原|說明|分類|標籤|新增分類|刪除分類)(?:\s|$)/u.test(text)) {
+  if (/^(?:查|最近|找|搜尋|排行|分類排行|今日|週報|這週|本週|上週|本月|月報|上月|改|加|移除|取消|還原|說明|幫助|help|分類|標籤|新增分類|刪除分類)(?:\s|$)/iu.test(text)) {
     if (/^(?:新增分類|刪除分類)(?:\s|$)/u.test(text)) {
       return invalid("目前分類是固定清單，不支援新增或刪除分類。");
     }

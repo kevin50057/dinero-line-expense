@@ -247,7 +247,7 @@ export class PostgresLineReplyOutboxDispatcher {
               END
           WHERE delivery_kind = 'line_reply'
             AND status = 'sending'
-            AND locked_at <= $1 - ($2::double precision * interval '1 millisecond')
+            AND locked_at <= $1::timestamptz - ($2::double precision * interval '1 millisecond')
           RETURNING status
         `,
         [now, this.#leaseTimeoutMs, this.#maxAttempts],

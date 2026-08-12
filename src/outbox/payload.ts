@@ -1,13 +1,25 @@
 const MAX_REPLY_MESSAGES = 5;
 const MAX_TEXT_CHARACTERS = 5_000;
+const MAX_ALT_TEXT_CHARACTERS = 400;
+const MAX_FLEX_JSON_BYTES = 50_000;
+const MAX_FLEX_COMPONENTS = 200;
+const MAX_FLEX_DEPTH = 12;
 
 export interface LineReplyTextMessage {
   readonly type: "text";
   readonly text: string;
 }
 
+export interface LineReplyFlexMessage {
+  readonly type: "flex";
+  readonly altText: string;
+  readonly contents: Readonly<Record<string, unknown>>;
+}
+
+export type LineReplyMessage = LineReplyTextMessage | LineReplyFlexMessage;
+
 export interface LineReplyPayload {
-  readonly messages: readonly LineReplyTextMessage[];
+  readonly messages: readonly LineReplyMessage[];
 }
 
 /** A deliberately content-free error so invalid payloads are never logged by accident. */
@@ -24,60 +36,137 @@ export class InvalidLineReplyPayloadError extends Error {
  * from reaching the provider.
  */
 export function parseLineReplyPayload(value: unknown): LineReplyPayload {
-  if (!isPlainRecord(value) || !hasOnlyKeys(value, ["messages"])) {
-    throw new InvalidLineReplyPayloadError();
-  }
-
+  if (!isPlainRecord(value) || !hasExactKeys(value, ["messages"])) fail();
   const messages = value["messages"];
-  if (
-    !Array.isArray(messages) ||
-    messages.length === 0 ||
-    messages.length > MAX_REPLY_MESSAGES
-  ) {
-    throw new InvalidLineReplyPayloadError();
+  if (!Array.isArray(messages) || messages.length === 0 || messages.length > MAX_REPLY_MESSAGES) fail();
+  return { messages: messages.map(parseMessage) };
+}
+
+function parseMessage(message: unknown): LineReplyMessage {
+  if (!isPlainRecord(message) || typeof message["type"] !== "string") fail();
+  if (message["type"] === "text") {
+    if (!hasExactKeys(message, ["type", "text"]) || !validText(message["text"], 1, MAX_TEXT_CHARACTERS)) fail();
+    return { type: "text", text: message["text"] as string };
   }
+  if (message["type"] === "flex") {
+    if (!hasExactKeys(message, ["type", "altText", "contents"]) || !validText(message["altText"], 1, MAX_ALT_TEXT_CHARACTERS)) fail();
+    if (new TextEncoder().encode(JSON.stringify(message)).length > MAX_FLEX_JSON_BYTES) fail();
+    const state = { components: 0 };
+    const contents = parseFlexContainer(message["contents"], 0, state);
+    return { type: "flex", altText: message["altText"] as string, contents };
+  }
+  fail();
+}
 
-  return {
-    messages: messages.map((message) => {
-      const textCharacterCount =
-        isPlainRecord(message) && typeof message["text"] === "string"
-          ? countUnicodeCharacters(message["text"])
-          : 0;
-      if (
-        !isPlainRecord(message) ||
-        !hasOnlyKeys(message, ["type", "text"]) ||
-        message["type"] !== "text" ||
-        typeof message["text"] !== "string" ||
-        textCharacterCount === 0 ||
-        textCharacterCount > MAX_TEXT_CHARACTERS
-      ) {
-        throw new InvalidLineReplyPayloadError();
+function parseFlexContainer(value: unknown, depth: number, state: { components: number }): Readonly<Record<string, unknown>> {
+  countComponent(depth, state);
+  if (!isPlainRecord(value) || typeof value["type"] !== "string") fail();
+  if (value["type"] === "bubble") {
+    if (!hasAllowedKeys(value, ["type", "size", "header", "body", "footer"])) fail();
+    if (value["size"] !== undefined && !["nano", "micro", "kilo", "mega", "giga"].includes(String(value["size"]))) fail();
+    const result: Record<string, unknown> = { type: "bubble" };
+    if (value["size"] !== undefined) result["size"] = value["size"];
+    for (const section of ["header", "body", "footer"] as const) {
+      if (value[section] !== undefined) {
+        const parsed = parseFlexComponent(value[section], depth + 1, state);
+        if (parsed["type"] !== "box") fail();
+        result[section] = parsed;
       }
+    }
+    if (result["body"] === undefined && result["header"] === undefined && result["footer"] === undefined) fail();
+    return result;
+  }
+  if (value["type"] === "carousel") {
+    if (!hasExactKeys(value, ["type", "contents"]) || !Array.isArray(value["contents"]) || value["contents"].length < 1 || value["contents"].length > 12) fail();
+    return {
+      type: "carousel",
+      contents: value["contents"].map((item) => {
+        const parsed = parseFlexContainer(item, depth + 1, state);
+        if (parsed["type"] !== "bubble") fail();
+        return parsed;
+      }),
+    };
+  }
+  fail();
+}
 
-      return { type: "text" as const, text: message["text"] };
-    }),
-  };
+function parseFlexComponent(value: unknown, depth: number, state: { components: number }): Readonly<Record<string, unknown>> {
+  countComponent(depth, state);
+  if (!isPlainRecord(value) || typeof value["type"] !== "string") fail();
+  if (value["type"] === "box") {
+    if (!hasAllowedKeys(value, ["type", "layout", "contents", "spacing", "margin", "paddingAll", "backgroundColor", "cornerRadius"])) fail();
+    if (!isOneOf(value["layout"], ["vertical", "horizontal", "baseline"]) || !Array.isArray(value["contents"]) || value["contents"].length > 40) fail();
+    const result: Record<string, unknown> = { type: "box", layout: value["layout"], contents: value["contents"].map((item) => parseFlexComponent(item, depth + 1, state)) };
+    copyOptionalStrings(value, result, ["spacing", "margin", "paddingAll", "backgroundColor", "cornerRadius"]);
+    return result;
+  }
+  if (value["type"] === "text") {
+    if (!hasAllowedKeys(value, ["type", "text", "size", "color", "weight", "wrap", "align", "flex", "margin"]) || !validText(value["text"], 1, 2_000)) fail();
+    if (value["wrap"] !== undefined && typeof value["wrap"] !== "boolean") fail();
+    if (value["flex"] !== undefined && (!Number.isInteger(value["flex"]) || Number(value["flex"]) < 0 || Number(value["flex"]) > 10)) fail();
+    if (value["weight"] !== undefined && !isOneOf(value["weight"], ["regular", "bold"])) fail();
+    if (value["align"] !== undefined && !isOneOf(value["align"], ["start", "center", "end"])) fail();
+    const result: Record<string, unknown> = { type: "text", text: value["text"] };
+    copyOptionalStrings(value, result, ["size", "color", "weight", "align", "margin"]);
+    if (value["wrap"] !== undefined) result["wrap"] = value["wrap"];
+    if (value["flex"] !== undefined) result["flex"] = value["flex"];
+    return result;
+  }
+  if (value["type"] === "separator") {
+    if (!hasAllowedKeys(value, ["type", "margin", "color"])) fail();
+    const result: Record<string, unknown> = { type: "separator" };
+    copyOptionalStrings(value, result, ["margin", "color"]);
+    return result;
+  }
+  if (value["type"] === "button") {
+    if (!hasAllowedKeys(value, ["type", "style", "color", "height", "margin", "action"]) || !isPlainRecord(value["action"])) fail();
+    if (value["style"] !== undefined && !isOneOf(value["style"], ["link", "primary", "secondary"])) fail();
+    if (value["height"] !== undefined && !isOneOf(value["height"], ["sm", "md"])) fail();
+    const action = value["action"];
+    if (!hasExactKeys(action, ["type", "label", "text"]) || action["type"] !== "message" || !validText(action["label"], 1, 40) || !validText(action["text"], 1, 300)) fail();
+    const result: Record<string, unknown> = { type: "button", action: { type: "message", label: action["label"], text: action["text"] } };
+    copyOptionalStrings(value, result, ["style", "color", "height", "margin"]);
+    return result;
+  }
+  fail();
+}
+
+function copyOptionalStrings(source: Readonly<Record<string, unknown>>, target: Record<string, unknown>, keys: readonly string[]) {
+  for (const key of keys) {
+    if (source[key] === undefined) continue;
+    if (!validText(source[key], 1, 50)) fail();
+    target[key] = source[key];
+  }
+}
+
+function countComponent(depth: number, state: { components: number }) {
+  state.components += 1;
+  if (depth > MAX_FLEX_DEPTH || state.components > MAX_FLEX_COMPONENTS) fail();
+}
+
+function validText(value: unknown, min: number, max: number): value is string {
+  return typeof value === "string" && countUnicodeCharacters(value) >= min && countUnicodeCharacters(value) <= max;
+}
+
+function isOneOf(value: unknown, allowed: readonly string[]): value is string {
+  return typeof value === "string" && allowed.includes(value);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value) as unknown;
   return prototype === Object.prototype || prototype === null;
 }
 
-function hasOnlyKeys(
-  value: Readonly<Record<string, unknown>>,
-  allowedKeys: readonly string[],
-): boolean {
-  const keys = Object.keys(value);
-  return (
-    keys.length === allowedKeys.length &&
-    keys.every((key) => allowedKeys.includes(key))
-  );
+function hasExactKeys(value: Readonly<Record<string, unknown>>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && actual.every((key) => keys.includes(key));
 }
 
-function countUnicodeCharacters(value: string): number {
-  return Array.from(value).length;
+function hasAllowedKeys(value: Readonly<Record<string, unknown>>, keys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
 }
+
+function countUnicodeCharacters(value: string): number { return Array.from(value).length; }
+
+function fail(): never { throw new InvalidLineReplyPayloadError(); }

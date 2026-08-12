@@ -16,6 +16,8 @@ import type {
   MealCode,
   UpdateChange,
 } from "../domain/index.js";
+import { helpCards, infoCard } from "../application/line-cards.js";
+import type { LineReplyMessage } from "../outbox/payload.js";
 
 export interface CommandActor {
   readonly ledgerId: string;
@@ -32,6 +34,7 @@ export interface CommandEvent {
 export interface LedgerCommandResult {
   readonly outcome: "applied" | "rejected" | "noop";
   readonly reply: string;
+  readonly message?: LineReplyMessage;
   readonly publicId?: string;
 }
 
@@ -74,24 +77,44 @@ export async function processLedgerCommand(
 ): Promise<LedgerCommandResult> {
   switch (command.kind) {
     case "help":
-      return applied([
+      {
+      const reply = [
         "記帳：牛肉麵 150 #約會（預設共同）",
         "個人：個人 咖啡 80",
-        "查詢：最近、最近 5、今天、本月、查 #編號",
+        "查詢：最近、今天、週報、本月、找 關鍵字、分類排行",
         "修改：改 #編號 金額 180",
         "標籤：加 #編號 標籤 #約會",
         "取消／還原：取消 #編號、還原 #編號",
-      ].join("\n"));
+      ].join("\n");
+      return applied(reply, undefined, helpCards(reply));
+      }
     case "categories":
-      return applied("分類：食物、交通、娛樂、居家、購物、醫療健康、旅遊、未分類\n餐別：早餐、午餐、下午茶、晚餐、宵夜");
+      {
+        const reply = "分類：食物、交通、娛樂、居家、購物、醫療健康、旅遊、未分類\n餐別：早餐、午餐、下午茶、晚餐、宵夜";
+        return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 標籤系統", title: "分類與餐別", rows: [
+          { label: "支出分類", value: "食物・交通・娛樂・居家・購物・醫療健康・旅遊・未分類" },
+          { label: "食物餐別", value: "早餐・午餐・下午茶・晚餐・宵夜" },
+        ], note: "你也可以加 #約會、#台南 等自訂標籤。", actions: [{ label: "標籤說明", text: "標籤" }] }));
+      }
     case "tags_help":
-      return applied("每筆會有 1 個分類、最多 1 個餐別，另可加最多 10 個自訂標籤。\n範例：牛肉麵 150 #約會");
+      {
+        const reply = "每筆會有 1 個分類、最多 1 個餐別，另可加最多 10 個自訂標籤。\n範例：牛肉麵 150 #約會";
+        return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 自訂整理", title: "用標籤留下情境", rows: [
+          { label: "新增時", value: "牛肉麵 150 #約會 #台北" },
+          { label: "事後加入", value: "加 #編號 標籤 #約會" },
+          { label: "依標籤查詢", value: "本月 #約會" },
+        ], note: "每筆最多 10 個自訂標籤。", actions: [{ label: "看分類", text: "分類" }] }));
+      }
     case "detail":
       return queryDetail(client, actor, command.publicId);
     case "recent":
       return queryRecent(client, actor, command.limit);
     case "period":
       return queryPeriod(client, actor, event, command);
+    case "search":
+      return querySearch(client, actor, command.keyword);
+    case "ranking":
+      return queryRanking(client, actor, event);
     case "void":
     case "restore":
       return changeStatus(client, actor, event, command.publicId, command.kind);
@@ -109,14 +132,29 @@ async function queryDetail(client: PoolClient, actor: CommandActor, publicId: st
   const occurred = expense.occurred_at === null
     ? `${slashDate(expense.occurred_on)}（時間未指定）`
     : `${slashDate(expense.occurred_on)} ${toZonedMinute(expense.occurred_at, actor.timezone)?.time ?? "--:--"}`;
-  return applied([
+  const reply = [
     `#${expense.public_id}｜${expense.status === "active" ? "有效" : "已取消"}`,
     `${expense.scope === "shared" ? "共同" : "個人"}｜${expense.description}｜${money(expense.amount_minor)}`,
     `標籤：${tags.join("・")}`,
     `時間：${occurred}`,
     `付款：${expense.payer_name}`,
     ...(expense.owner_name === null ? [] : [`所有人：${expense.owner_name}`]),
-  ].join("\n"), publicId);
+  ].join("\n");
+  return applied(reply, publicId, infoCard({
+    altText: reply,
+    kicker: `交易 #${expense.public_id}`,
+    title: expense.description,
+    summary: money(expense.amount_minor),
+    rows: [
+      { label: "狀態與範圍", value: `${expense.status === "active" ? "有效" : "已取消"}・${expense.scope === "shared" ? "共同" : "個人"}` },
+      { label: "分類與標籤", value: tags.join("・") },
+      { label: "消費時間", value: occurred },
+      { label: "付款人", value: expense.payer_name, ...(expense.owner_name === null ? {} : { meta: `所有人：${expense.owner_name}` }) },
+    ],
+    actions: expense.status === "active"
+      ? [{ label: "取消這筆", text: `取消 #${expense.public_id}` }]
+      : [{ label: "還原這筆", text: `還原 #${expense.public_id}` }],
+  }));
 }
 
 async function queryRecent(client: PoolClient, actor: CommandActor, limit: number): Promise<LedgerCommandResult> {
@@ -130,11 +168,14 @@ async function queryRecent(client: PoolClient, actor: CommandActor, limit: numbe
     [actor.ledgerId, limit],
   );
   if (result.rows.length === 0) return applied("目前沒有有效的記帳紀錄。");
-  return applied([
+  const reply = [
     `最近 ${result.rows.length} 筆`,
     ...result.rows.map(formatListRow),
     `合計：${money(sumRows(result.rows))}`,
-  ].join("\n"));
+  ].join("\n");
+  return applied(reply, undefined, listCard(`最近 ${result.rows.length} 筆`, result.rows, reply, "按輸入時間排序", [
+    { label: "本月報表", text: "本月" }, { label: "找一筆", text: "說明" },
+  ]));
 }
 
 async function queryPeriod(
@@ -145,20 +186,7 @@ async function queryPeriod(
 ): Promise<LedgerCommandResult> {
   const local = toZonedMinute(event.eventAt, actor.timezone);
   if (local === null) return rejected("無法判定帳本日期，請稍後再試。");
-  let start: string;
-  let end: string;
-  let title: string;
-  if (command.period === "today" || command.period === "yesterday") {
-    start = command.period === "today" ? local.date : shiftCalendarDate(local.date, -1);
-    end = shiftCalendarDate(start, 1);
-    title = command.period === "today" ? "今天" : "昨天";
-  } else {
-    start = `${local.date.slice(0, 7)}-01`;
-    const year = Number(start.slice(0, 4));
-    const month = Number(start.slice(5, 7));
-    end = `${month === 12 ? year + 1 : year}-${String(month === 12 ? 1 : month + 1).padStart(2, "0")}-01`;
-    title = `${start.slice(0, 4)}/${start.slice(5, 7)}`;
-  }
+  const { start, end, title } = periodRange(local.date, command.period);
   const params: unknown[] = [actor.ledgerId, start, end];
   let filterSql = "";
   if (command.filter.kind === "shared") filterSql = " AND et.scope = 'shared'";
@@ -183,18 +211,100 @@ async function queryPeriod(
     params,
   );
   const suffix = command.filter.kind === "all" ? "" : command.filter.kind === "tag" ? ` #${command.filter.name}` : command.filter.kind === "shared" ? " 共同" : " 個人";
-  if (rows.rows.length === 0) return applied(`${title}${suffix}：0 筆，合計 0 元`);
+  if (rows.rows.length === 0) {
+    const reply = `${title}${suffix}：0 筆，合計 0 元`;
+    return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 支出報表", title: `${title}${suffix}`, summary: "0 元", note: "這個期間目前沒有符合條件的支出。", actions: [{ label: "最近紀錄", text: "最近 5" }] }));
+  }
 
   const scopeTotals = await periodScopeTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
   const memberTotals = await periodMemberTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
   const categoryTotals = await periodCategoryTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
-  return applied([
+  const reply = [
     `${title}${suffix}：${rows.rows.length} 筆，合計 ${money(sumRows(rows.rows))}`,
     `共同：${money(scopeTotals.shared)}`,
     ...memberTotals.map((row) => `${row.name}個人：${money(row.total)}`),
     `分類：${categoryTotals.length === 0 ? "無" : categoryTotals.map((row) => `${row.name} ${money(row.total)}`).join("・")}`,
-    ...(command.period === "month" ? [] : rows.rows.map(formatListRow)),
-  ].join("\n"));
+    ...(command.period === "month" || command.period === "last_month" ? [] : rows.rows.map(formatListRow)),
+  ].join("\n");
+  return applied(reply, undefined, infoCard({
+    altText: reply,
+    kicker: "DINERO 支出報表",
+    title: `${title}${suffix}`,
+    summary: money(sumRows(rows.rows)),
+    rows: [
+      { label: "筆數", value: `${rows.rows.length} 筆` },
+      { label: "共同支出", value: money(scopeTotals.shared) },
+      ...memberTotals.map((row) => ({ label: `${row.name}的個人支出`, value: money(row.total) })),
+      { label: "分類分布", value: categoryTotals.length === 0 ? "無" : categoryTotals.map((row) => `${row.name} ${money(row.total)}`).join("・") },
+    ],
+    ...(rows.rows.length > 10 ? { note: `另有 ${rows.rows.length - 10} 筆未在卡片逐筆顯示，可用期間篩選或「最近 20」查看。` } : {}),
+    actions: [{ label: "分類排行", text: "分類排行" }, { label: "最近紀錄", text: "最近 5" }],
+  }));
+}
+
+async function querySearch(client: PoolClient, actor: CommandActor, keyword: string): Promise<LedgerCommandResult> {
+  const pattern = `%${keyword.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+  const result = await client.query<ListRow>(
+    `SELECT public_id, amount_minor::text, description, scope::text,
+            occurred_on::text, occurred_at
+       FROM expense_transaction
+      WHERE ledger_id=$1 AND status='active' AND description ILIKE $2 ESCAPE '\\'
+      ORDER BY occurred_on DESC, occurred_at DESC NULLS LAST, created_at DESC, id DESC
+      LIMIT 20`,
+    [actor.ledgerId, pattern],
+  );
+  const reply = result.rows.length === 0
+    ? `找不到包含「${keyword}」的有效記帳紀錄。`
+    : [`搜尋「${keyword}」：${result.rows.length} 筆`, ...result.rows.map(formatListRow), `合計：${money(sumRows(result.rows))}`].join("\n");
+  if (result.rows.length === 0) return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 搜尋", title: `「${keyword}」`, note: "沒有找到符合的有效支出。", actions: [{ label: "最近紀錄", text: "最近 5" }] }));
+  return applied(reply, undefined, listCard(`搜尋「${keyword}」`, result.rows, reply, `找到 ${result.rows.length} 筆`, [{ label: "本月報表", text: "本月" }]));
+}
+
+async function queryRanking(client: PoolClient, actor: CommandActor, event: CommandEvent): Promise<LedgerCommandResult> {
+  const local = toZonedMinute(event.eventAt, actor.timezone);
+  if (local === null) return rejected("無法判定帳本日期，請稍後再試。");
+  const { start, end, title } = periodRange(local.date, "month");
+  const categories = await periodCategoryTotals(client, actor.ledgerId, start, end, "", []);
+  const total = categories.reduce((sum, row) => sum + Number(row.total), 0);
+  const reply = categories.length === 0
+    ? `${title}分類排行：目前沒有有效支出。`
+    : [`${title}分類排行`, ...categories.map((row, index) => `${index + 1}. ${row.name} ${money(row.total)}`), `合計：${money(total)}`].join("\n");
+  return applied(reply, undefined, infoCard({
+    altText: reply,
+    kicker: "DINERO 本月排行",
+    title: "分類消費榜",
+    summary: money(total),
+    rows: categories.map((row, index) => ({
+      label: `#${index + 1} ${row.name}`,
+      value: money(row.total),
+      meta: total === 0 ? "0%" : `${Math.round(Number(row.total) / total * 100)}%`,
+    })),
+    note: categories.length === 0 ? "本月目前還沒有支出。" : "分類占比以本月有效支出計算。",
+    actions: [{ label: "本月明細", text: "本月" }, { label: "上月報表", text: "上月" }],
+  }));
+}
+
+function periodRange(date: string, period: Extract<LedgerCommand, { kind: "period" }>["period"]): { start: string; end: string; title: string } {
+  if (period === "today" || period === "yesterday") {
+    const start = period === "today" ? date : shiftCalendarDate(date, -1);
+    return { start, end: shiftCalendarDate(start, 1), title: period === "today" ? "今天" : "昨天" };
+  }
+  if (period === "week" || period === "last_week") {
+    const day = new Date(`${date}T00:00:00Z`).getUTCDay();
+    const mondayOffset = (day + 6) % 7;
+    const thisMonday = shiftCalendarDate(date, -mondayOffset);
+    const start = period === "week" ? thisMonday : shiftCalendarDate(thisMonday, -7);
+    return { start, end: shiftCalendarDate(start, 7), title: period === "week" ? "本週" : "上週" };
+  }
+  const thisMonth = `${date.slice(0, 7)}-01`;
+  const start = period === "month" ? thisMonth : shiftMonth(thisMonth, -1);
+  return { start, end: shiftMonth(start, 1), title: period === "month" ? `${start.slice(0, 4)}/${start.slice(5, 7)}` : `上月 ${start.slice(0, 4)}/${start.slice(5, 7)}` };
+}
+
+function shiftMonth(firstOfMonth: string, amount: number): string {
+  const date = new Date(`${firstOfMonth}T00:00:00Z`);
+  date.setUTCMonth(date.getUTCMonth() + amount);
+  return date.toISOString().slice(0, 10);
 }
 
 async function periodMemberTotals(client: PoolClient, ledgerId: string, start: string, end: string, filterSql: string, extra: readonly unknown[]) {
@@ -560,12 +670,29 @@ function authorizeMutation(expense: ExpenseRow, memberId: string): LedgerCommand
     : null;
 }
 
+function listCard(title: string, rows: readonly ListRow[], altText: string, note: string, actions: readonly { label: string; text: string }[]): LineReplyMessage {
+  const visible = rows.slice(0, 8);
+  return infoCard({
+    altText,
+    kicker: "DINERO 記帳列表",
+    title,
+    summary: money(sumRows(rows)),
+    rows: visible.map((row) => ({
+      label: `${slashDate(row.occurred_on)}・${row.scope === "shared" ? "共同" : "個人"}`,
+      value: `${row.description}　${money(row.amount_minor)}`,
+      meta: `#${row.public_id}`,
+    })),
+    note: rows.length > visible.length ? `${note}；卡片顯示前 ${visible.length} 筆，共 ${rows.length} 筆。` : note,
+    actions,
+  });
+}
+
 function statusSnapshot(expense: ExpenseRow) { return { status: expense.status, voidReason: expense.status === "voided" ? "user_cancel" : null }; }
 function formatListRow(row: ListRow) { return `#${row.public_id}｜${slashDate(row.occurred_on)}｜${row.scope === "shared" ? "共同" : "個人"}｜${row.description}｜${money(row.amount_minor)}`; }
 function slashDate(value: string) { return value.replaceAll("-", "/"); }
 function sumRows(rows: readonly ListRow[]) { return rows.reduce((sum, row) => sum + Number(row.amount_minor), 0); }
 function money(value: string | number) { return `${new Intl.NumberFormat("zh-TW").format(Number(value))} 元`; }
-function applied(reply: string, publicId?: string): LedgerCommandResult { return { outcome: "applied", reply, ...(publicId === undefined ? {} : { publicId }) }; }
+function applied(reply: string, publicId?: string, message?: LineReplyMessage): LedgerCommandResult { return { outcome: "applied", reply, ...(message === undefined ? {} : { message }), ...(publicId === undefined ? {} : { publicId }) }; }
 function rejected(reply: string, publicId?: string): LedgerCommandResult { return { outcome: "rejected", reply, ...(publicId === undefined ? {} : { publicId }) }; }
 function noop(reply: string, publicId?: string): LedgerCommandResult { return { outcome: "noop", reply, ...(publicId === undefined ? {} : { publicId }) }; }
 function notFound() { return rejected("找不到這筆交易。請確認編號是否正確。"); }

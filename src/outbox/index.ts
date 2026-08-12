@@ -12,7 +12,7 @@ export {
   InvalidLineReplyPayloadError,
   parseLineReplyPayload,
 } from "./payload.js";
-export type { LineReplyPayload, LineReplyTextMessage } from "./payload.js";
+export type { LineReplyFlexMessage, LineReplyMessage, LineReplyPayload, LineReplyTextMessage } from "./payload.js";
 export { PostgresLineReplyOutboxDispatcher } from "./dispatcher.js";
 export type {
   LeaseRecoveryResult,

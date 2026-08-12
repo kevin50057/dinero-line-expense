@@ -63,7 +63,8 @@ LINE handler 只負責驗證、將 event 安全寫入 inbox 與送出既定回�
 
 - 實作 `查 #ID`，可查看 active 與 voided。
 - 實作 `最近 [N]`，按建立時間倒序並限制 1–20。
-- 實作今天、昨天、本月、scope 與 hashtag 篩選。
+- 實作今天、昨天、本週、上週、本月、上月、scope 與 hashtag 篩選。
+- 實作項目關鍵字搜尋、分類排行與常用指令別名。
 - `本月`同時回傳唯一交易總額、共同小計、兩位個人小計及大分類小計。
 - 使用 Asia/Taipei 半開時間／日期區間，正確處理月界線。
 - 明確標示自訂標籤統計可重疊，不能直接相加。
@@ -85,6 +86,7 @@ LINE handler 只負責驗證、將 event 安全寫入 inbox 與送出既定回�
 ## 7. 階段 5 — LINE 編輯、收回與 onboarding
 
 - 實作 `說明`、`分類`、`標籤`及 join event 歡迎訊息。
+- 將說明、單筆、列表、期間摘要、搜尋與排行回覆呈現為通過嚴格 allowlist 的 LINE Flex Message 卡片。
 - LINE edit event 不改帳；只對已入帳 message 回覆正確修改指令。
 - 原 message 與 unsend handler 以 `(ledger, message ID)` 共用 transaction-scoped advisory lock，再操作 tombstone，處理亂序與真正並行。
 - 在主要 DB recovery unit 之外建立加密、append-only durable deletion journal；unsend 先寫 journal，再 purge 線上資料。
