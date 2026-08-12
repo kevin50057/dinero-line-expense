@@ -1,0 +1,102 @@
+# 兩人記帳 LINE Bot
+
+這個專案採 Specification-Driven Development（SDD）：先定義帳務語意、對話格式、資料約束與驗收案例，再開始實作。目前已完成可執行的交易 CRUD、LINE 原生編輯提示、join onboarding 與 unsend 隱私清除流程。
+
+## 目前的 MVP 草案
+
+- 群組是純記帳群，`牛肉麵 150` 直接建立一筆共同支出。
+- `個人 咖啡 80` 建立傳送者的個人支出；群組內兩人都看得到，只有所有人能修改或取消。
+- 一筆帳可以同時有多種標籤：一個大分類、最多一個餐別，以及多個自訂標籤。
+- `牛肉麵 150 #約會` 可得到 `食物・午餐（自動）・約會`。
+- 只有正餐型食物自動判定早餐／午餐／晚餐；咖啡、飲料與點心不自動套餐別。
+- `昨天 牛肉麵 150` 只保存昨天、時間未知；`昨天 19:30 牛肉麵 150` 才能依時間自動判定晚餐。
+- 支援帳目新增、查詢、修改、取消與還原，不計算誰欠誰。
+- `本月`顯示唯一交易總額、共同小計與兩人的個人小計。
+
+## 文件
+
+- [產品規格](specs/001-line-expense-bot/spec.md)
+- [資料模型](specs/001-line-expense-bot/data-model.md)
+- [驗收案例](specs/001-line-expense-bot/acceptance.md)
+- [對話範例](specs/001-line-expense-bot/examples.md)
+- [實作計畫](specs/001-line-expense-bot/plan.md)
+
+## 可執行的交易流程
+
+```text
+LINE：「牛肉麵 150 #約會」
+  → 驗證 webhook、群組與成員
+  → 解析共同支出、項目與金額
+  → 標記食物、午餐（自動）、約會
+  → 寫入 PostgreSQL 並可靠去重
+  → LINE 回覆實際保存結果
+
+LINE：「最近 5」／「本月 #約會」／「查 #K7M2Q9TX」
+  → 查詢有效交易、期間摘要或完整單筆狀態
+
+LINE：「改 #K7M2Q9TX 金額 180」
+  → 檢查共同／個人所有人權限
+  → 原子修改並保存 before／after 稽核
+
+LINE：「取消 #K7M2Q9TX」／「還原 #K7M2Q9TX」
+  → 可還原的 soft void，重複操作不重複寫稽核
+
+LINE：直接編輯原始記帳訊息
+  → 不修改帳務，也不保存編輯後文字
+  → 回覆應使用的「改 #編號 欄位 新值」格式
+
+LINE：Bot 加入允許的記帳群組
+  → 說明共同、個人與自訂標籤的第一步用法
+```
+
+規格目前標記為 Draft v2，預期會在兩人實際試用後繼續調整。
+
+## 本機先看解析成效
+
+不需要 LINE token 或 PostgreSQL，也不會真的寫入資料：
+
+```bash
+npm install
+DEMO_EVENT_TIMESTAMP='2026-08-13T04:10:00.123Z' \
+  npm run demo:parse -- '牛肉麵 150 #約會'
+```
+
+輸出會顯示共同／個人、金額、分類、餐別、自訂標籤和消費時間。
+`npm run demo:parse -- '最近 5'` 也會證明保留指令不會誤入帳。
+
+## PWA 前端原型
+
+目前提供 mobile-first 的可安裝 PWA 原型，包含本月總覽、共同／個人切換、分類摘要、最近支出與快速新增互動。這一版使用 mock data，用來先驗證產品介面；後續再接交易 API 與 LINE Login／LIFF。
+
+```bash
+npm run web:dev
+```
+
+開啟 `http://127.0.0.1:4173`。production build 使用：
+
+```bash
+npm run web:build
+```
+
+## 啟動 CRUD 垂直切片
+
+需求：Node.js 24+、PostgreSQL 16，以及一個 LINE Messaging API channel。
+
+1. 依 [.env.example](.env.example) 建立環境變數；`OUTBOX_CREDENTIAL_KEY_BASE64` 可用 `openssl rand -base64 32` 產生。
+2. `npm run db:migrate` 建 schema。
+3. 依 [db/README.md](db/README.md) seed 指定群組、成員與固定標籤；可先以 1 位成員試用，之後再加入第 2 位。
+4. `npm run dev` 啟動服務，把 LINE webhook 指向 HTTPS 的 `/webhooks/line`。
+
+服務會驗證 raw webhook 簽章，以 transactional inbox 去重，背景執行新增、查詢、修改、取消、還原與 audit，再透過 outbox 回覆 LINE。`/healthz` 是程序存活，`/readyz` 會檢查 PostgreSQL。
+
+`DELETION_JOURNAL_DIRECTORY` 必須放在與 PostgreSQL 不同 recovery unit 的持久儲存；這是防止舊備份還原後讓已收回訊息復活。開放實際流量前也必須用 production HTTPS、DB TLS、加密備份與監控。
+
+## 驗證
+
+```bash
+npm run typecheck
+npm test
+npm run build
+```
+
+若要執行 PostgreSQL integration tests，另設定 `TEST_DATABASE_URL` 指向專用空測試資料庫；測試會在隨機 schema 中執行並清除。
