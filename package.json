@@ -1,0 +1,41 @@
+{
+  "name": "couple-expense-line-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "web:dev": "vite --config vite.config.ts",
+    "web:build": "vite build --config vite.config.ts",
+    "web:preview": "vite preview --config vite.config.ts",
+    "dev": "tsx --env-file=.env watch src/server.ts",
+    "start": "node --env-file=.env dist/server.js",
+    "typecheck": "tsc --noEmit && tsc -p web/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:migrate": "tsx --env-file=.env scripts/migrate.ts",
+    "line:bootstrap": "tsx --env-file=.env scripts/capture-line-identities.ts",
+    "line:finalize": "tsx --env-file=.env scripts/finalize-line-bootstrap.ts",
+    "demo:parse": "tsx scripts/demo-parser.ts"
+  },
+  "dependencies": {
+    "pg": "8.23.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/pg": "8.21.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "tsx": "4.23.12",
+    "typescript": "6.0.3",
+    "vite": "^8.2.1",
+    "vitest": "4.1.10"
+  }
+}
