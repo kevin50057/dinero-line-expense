@@ -35,6 +35,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await admin.query(await readFile(resolve("db/migrations/002_personal_default_mode.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/003_native_family_system_tag.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/004_category_knowledge.sql"), "utf8"));
+    await admin.query(await readFile(resolve("db/migrations/005_product_catalog.sql"), "utf8"));
     const ledger = await admin.query<{ id: string }>(
       `INSERT INTO ledger (name, line_group_id) VALUES ('Worker ledger', 'C-worker')
        RETURNING id::text AS id`,
@@ -163,6 +164,28 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     );
     expect(result.rows[0]).toMatchObject({ code: "shopping", source: "inferred", rules: "1" });
     await pool.query("DELETE FROM expense_transaction WHERE public_id IN ('K3ARN888','R3S3X888')");
+  });
+
+  it("uses a normalized product catalog alias when no direct knowledge rule matches", async () => {
+    await pool.query(
+      `INSERT INTO product_catalog_item (
+         source,external_id,product_name,normalized_name,search_name,source_url,
+         category_code,meal_eligible,classification_source
+       ) VALUES (
+         'pxmart_sitemap','SKU-TEST','光泉富維他命鮮乳936ml','光泉富維他命鮮乳936ml',
+         '光泉富維他命鮮乳','https://example.test/product/SKU-TEST','food',true,'source_taxonomy'
+       )`,
+    );
+    await insertTextEvent("E-catalog-alias", "M-catalog-alias", "光泉富維他命鮮乳 99");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "M2KKX888" }))
+      .toMatchObject({ outcome: "applied" });
+    const category = await pool.query<{ code: string; rule_key: string }>(
+      `SELECT t.code,tt.rule_key FROM expense_transaction et
+       JOIN transaction_tag tt ON tt.transaction_id=et.id AND tt.tag_type='category'
+       JOIN tag t ON t.id=tt.tag_id WHERE et.public_id='M2KKX888'`,
+    );
+    expect(category.rows[0]).toMatchObject({ code: "food", rule_key: "catalog:pxmart_sitemap:SKU-TEST" });
+    await pool.query("DELETE FROM expense_transaction WHERE public_id='M2KKX888'");
   });
 
   it("retries a ledger-local public ID collision without partial rows", async () => {

@@ -150,15 +150,27 @@ async function queryCategoryRules(client: PoolClient, actor: CommandActor): Prom
       WHERE ledger_id=$1 AND is_active AND source='member_correction'`,
     [actor.ledgerId],
   );
+  const catalog = await client.query<{ total: string; classified: string }>(
+    `SELECT count(*) FILTER (WHERE is_active)::text AS total,
+            count(*) FILTER (WHERE is_active AND category_code <> 'uncategorized')::text AS classified
+       FROM product_catalog_item`,
+  );
   const systemCount = system.rows.reduce((sum, row) => sum + Number(row.count), 0);
   const learnedCount = Number(learned.rows[0]?.count ?? 0);
-  const reply = `分類知識表：系統 ${systemCount} 條、你們專屬 ${learnedCount} 條。手動改分類後會自動學習。`;
+  const catalogTotal = Number(catalog.rows[0]?.total ?? 0);
+  const catalogClassified = Number(catalog.rows[0]?.classified ?? 0);
+  const reply = `分類知識表：規則 ${systemCount} 條、商品 ${catalogTotal} 件（已分類 ${catalogClassified}）、你們專屬 ${learnedCount} 條。`;
   return applied(reply, undefined, infoCard({
     altText: reply,
     kicker: "DINERO 分類知識表",
-    title: `${systemCount + learnedCount} 條分類規則`,
-    summary: `系統 ${systemCount}・專屬 ${learnedCount}`,
+    title: "消費分類總表",
+    summary: `商品 ${catalogTotal}・規則 ${systemCount + learnedCount}`,
     rows: [
+      {
+        label: "商品主檔",
+        value: `${catalogTotal} 件・${catalogClassified} 件可直接分類`,
+        meta: "來源：官方公開商品索引；無把握的商品保留未分類",
+      },
       ...system.rows.map((row) => ({
         label: CATEGORY_DISPLAY_NAMES[row.category_code],
         value: `${row.count} 個常見詞`,
@@ -170,7 +182,7 @@ async function queryCategoryRules(client: PoolClient, actor: CommandActor): Prom
         meta: learned.rows[0]?.examples?.join("・") ?? "",
       }]),
     ],
-    note: "分類順序：帳本專屬精確規則 → 系統常見詞 → 內建保守規則。",
+    note: "分類順序：帳本專屬精確規則 → 常見消費詞 → 商品主檔 → 內建保守規則。",
     actions: [{ label: "最近紀錄", text: "最近 5" }, { label: "分類說明", text: "分類" }],
   }));
 }

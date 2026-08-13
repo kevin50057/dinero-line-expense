@@ -19,6 +19,7 @@
     "db:migrate": "tsx --env-file=.env scripts/migrate.ts",
     "line:bootstrap": "tsx --env-file=.env scripts/capture-line-identities.ts",
     "line:finalize": "tsx --env-file=.env scripts/finalize-line-bootstrap.ts",
+    "catalog:sync": "tsx --env-file=.env scripts/sync-product-catalog.ts",
     "demo:parse": "tsx scripts/demo-parser.ts"
   },
   "dependencies": {

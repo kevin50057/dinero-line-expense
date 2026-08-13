@@ -48,6 +48,14 @@ Seed 會明確設定：
 
 使用者手動修改分類時，worker 會以 `member_correction` 寫入該帳本的 exact 規則；它不會影響其他帳本，也永遠不會覆蓋訊息裡明確指定的分類。
 
+`005_product_catalog.sql` 建立可更新的最小商品主檔。同步器只保存商品 ID、名稱、搜尋別名、推定分類、來源網址與同步時間，不複製價格、圖片或商品文案：
+
+```bash
+npm run catalog:sync
+```
+
+目前 `pxmart_sitemap` 來源使用全聯官方 `robots.txt` 宣告的商品 sitemap。可用 `CATALOG_MAX_SITEMAPS=1 npm run catalog:sync` 做小批驗證；完整同步結束才會停用本次已不存在的舊商品。無法可靠分類的商品仍保留於主檔，但不參與自動判斷。
+
 ## 實作必須遵守的 DB workflow
 
 - 每筆 `expense_transaction` 和它恰好一個 category tag 必須在同一個 transaction 寫入；deferred constraint 會在 commit 時驗證。meal 至多一個且只能和 `category:food` 共存，自訂標籤至多十個。

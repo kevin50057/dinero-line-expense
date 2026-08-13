@@ -49,7 +49,7 @@ export async function resolveCategoryKnowledge(
     [ledgerId, normalized],
   );
   const row = result.rows[0];
-  if (row === undefined) return null;
+  if (row === undefined) return resolveProductCatalog(client, normalized);
   return {
     category: makeCategoryAssignment(
       row.category_code,
@@ -57,6 +57,54 @@ export async function resolveCategoryKnowledge(
       `knowledge:${row.source}:${row.id}`,
     ),
     mealEligible: row.meal_eligible,
+  };
+}
+
+interface CatalogMatchRow {
+  external_id: string;
+  source: string;
+  category_code: CategoryCode;
+  meal_eligible: boolean;
+  exact_match: boolean;
+  score: number;
+}
+
+async function resolveProductCatalog(
+  client: PoolClient,
+  normalized: string,
+): Promise<CategoryKnowledgeMatch | null> {
+  if ([...normalized].length < 2) return null;
+  const result = await client.query<CatalogMatchRow>(
+    `SELECT external_id, source, category_code, meal_eligible,
+            (normalized_name=$1 OR search_name=$1) AS exact_match,
+            greatest(similarity(normalized_name,$1), similarity(search_name,$1))::float8 AS score
+       FROM product_catalog_item
+      WHERE is_active AND category_code <> 'uncategorized'
+        AND (
+          normalized_name=$1 OR search_name=$1
+          OR normalized_name LIKE '%' || $1 || '%'
+          OR search_name LIKE '%' || $1 || '%'
+          OR (char_length($1) >= 3 AND (normalized_name % $1 OR search_name % $1))
+        )
+      ORDER BY (normalized_name=$1 OR search_name=$1) DESC,
+               greatest(similarity(normalized_name,$1), similarity(search_name,$1)) DESC,
+               char_length(search_name), id
+      LIMIT 20`,
+    [normalized],
+  );
+  const first = result.rows[0];
+  if (first === undefined) return null;
+  const contenders = first.exact_match
+    ? result.rows.filter((row) => row.exact_match)
+    : result.rows.filter((row) => row.score >= first.score - 0.05);
+  if (new Set(contenders.map((row) => row.category_code)).size !== 1) return null;
+  return {
+    category: makeCategoryAssignment(
+      first.category_code,
+      "inferred",
+      `catalog:${first.source}:${first.external_id}`,
+    ),
+    mealEligible: first.meal_eligible,
   };
 }
 
