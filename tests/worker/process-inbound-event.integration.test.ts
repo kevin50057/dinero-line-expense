@@ -618,6 +618,24 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     }
   });
 
+  it("records a future prepaid expense only with the cheat prefix", async () => {
+    await insertTextEvent("E-future-denied", "M-future-denied", "2026/9/25 香港機+酒 30141");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "rejected" });
+
+    await insertTextEvent("E-future-allowed", "M-future-allowed", "作弊 2026/9/25 香港機+酒 30141");
+    await expect(processNextInboundEvent(pool, { generatePublicId: () => "HKTRP3A2" }))
+      .resolves.toMatchObject({ outcome: "applied", publicId: "HKTRP3A2" });
+    const expense = await pool.query<{ description: string; occurred_on: string; amount: string }>(
+      `SELECT description,occurred_on::text,amount_minor::text AS amount
+         FROM expense_transaction WHERE public_id='HKTRP3A2'`,
+    );
+    expect(expense.rows[0]).toEqual({
+      description: "香港機+酒",
+      occurred_on: "2026-09-25",
+      amount: "30141",
+    });
+  });
+
   it("lets each member set a unique nickname used by later cards and reports", async () => {
     await insertTextEvent("E-nickname", "M-nickname", "設定暱稱 阿明");
     await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });

@@ -78,6 +78,7 @@ interface PrefixState {
   readonly occurredTimePrecision: "unknown" | "minute" | "millisecond";
   readonly explicitMeal: MealCode | null;
   readonly explicitMealDisplay: string | null;
+  readonly allowFuture: boolean;
 }
 
 type LocalResult<T> =
@@ -158,8 +159,8 @@ export function parseExpenseMessage(
     );
   }
 
-  if (state.occurredOn > eventMinute.date) {
-    return failure("FUTURE_DATE", "不能記錄未來日期。");
+  if (state.occurredOn > eventMinute.date && !state.allowFuture) {
+    return failure("FUTURE_DATE", "不能記錄未來日期；若是預訂或預付支出，請在最前面加「作弊」。");
   }
 
   if (
@@ -169,7 +170,7 @@ export function parseExpenseMessage(
       state.occurredTime,
       eventMinute.date,
       eventMinute.time,
-    ) > 0
+    ) > 0 && !state.allowFuture
   ) {
     return failure("FUTURE_TIME", "不能記錄未來時間。");
   }
@@ -515,11 +516,21 @@ function parsePrefixes(
   let explicitMeal: MealCode | null = null;
   let explicitMealDisplay: string | null = null;
   let mealPrefixSeen = false;
+  let allowFuture = false;
 
   while (cursor < tokens.length) {
     const token = tokens[cursor];
     if (token === undefined) {
       break;
+    }
+
+    if (token === "作弊") {
+      if (allowFuture) {
+        return failure("INVALID_FORMAT", "「作弊」前綴只能出現一次。");
+      }
+      allowFuture = true;
+      cursor += 1;
+      continue;
     }
 
     const parsedScope = parseScope(token);
@@ -548,10 +559,6 @@ function parsePrefixes(
       dateSeen = true;
       cursor += 1;
       continue;
-    }
-
-    if (token === "明天" || token === "後天") {
-      return failure("FUTURE_DATE", "不能記錄未來日期。");
     }
 
     if (/^\d{1,2}\/\d{1,2}$/u.test(token)) {
@@ -657,6 +664,7 @@ function parsePrefixes(
           : "millisecond",
       explicitMeal,
       explicitMealDisplay,
+      allowFuture,
     },
   };
 }
@@ -680,6 +688,12 @@ function parseRelativeDate(token: string): number | null {
   }
   if (token === "前天") {
     return -2;
+  }
+  if (token === "明天") {
+    return 1;
+  }
+  if (token === "後天") {
+    return 2;
   }
   return null;
 }

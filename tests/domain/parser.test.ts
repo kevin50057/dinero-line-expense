@@ -268,6 +268,23 @@ describe("parseExpenseMessage date and time semantics", () => {
     expectError("2026-08-14 牛肉麵 150", "FUTURE_DATE");
   });
 
+  it("allows an explicitly unlocked future expense without keeping the keyword in its description", () => {
+    expect(parseOk("作弊 2026/9/25 香港機+酒 30141")).toMatchObject({
+      description: "香港機+酒",
+      amountMinor: 30141,
+      occurredOn: "2026-09-25",
+      occurredAt: null,
+      scope: "shared",
+    });
+    expect(parseOk("個人 作弊 明天 19:30 飯店 5000")).toMatchObject({
+      description: "飯店",
+      occurredOn: "2026-08-14",
+      occurredTime: "19:30",
+      scope: "personal",
+    });
+    expectError("作弊 作弊 2026/9/25 飯店 5000", "INVALID_FORMAT");
+  });
+
   it("accepts a real leap day and rejects a false one", () => {
     const event = "2028-03-01T04:10:00.000Z";
     expect(parseOk("2028-02-29 牛肉麵 150", event).occurredOn).toBe(
