@@ -13,8 +13,10 @@ import {
 } from "../domain/index.js";
 import type {
   CategoryCode,
+  CommandFilter,
   LedgerCommand,
   MealCode,
+  PeriodSelection,
   UpdateChange,
 } from "../domain/index.js";
 import { helpCards, infoCard } from "../application/line-cards.js";
@@ -84,7 +86,7 @@ export async function processLedgerCommand(
         "記帳：牛肉麵 150 #工作（初始為個人模式）",
         "個人：個人 咖啡 80",
         "模式：切換共同模式、切換個人模式、目前模式",
-        "查詢：最近、今天、週報、本月、找 關鍵字、分類排行",
+        "查詢：最近、今天、週報、共同月報、7月月報、找 關鍵字、分類排行",
         "修改：最近 5 → 點每筆右側的編輯",
         "標籤：改 #編號 標籤 #約會 #台南",
         "取消／還原：取消 #編號、還原 #編號",
@@ -361,7 +363,7 @@ async function queryPeriod(
     `共同：${money(scopeTotals.shared)}`,
     ...memberTotals.map((row) => `${row.name}個人：${money(row.total)}`),
     `分類：${categoryTotals.length === 0 ? "無" : categoryTotals.map((row) => `${row.name} ${money(row.total)}`).join("・")}`,
-    ...(command.period === "month" || command.period === "last_month" ? [] : rows.rows.map(formatListRow)),
+    ...(isMonthPeriod(command.period) ? [] : rows.rows.map(formatListRow)),
   ].join("\n");
   return applied(reply, undefined, infoCard({
     altText: reply,
@@ -375,7 +377,9 @@ async function queryPeriod(
       { label: "分類分布", value: categoryTotals.length === 0 ? "無" : categoryTotals.map((row) => `${row.name} ${money(row.total)}`).join("・") },
     ],
     ...(rows.rows.length > 10 ? { note: `另有 ${rows.rows.length - 10} 筆未在卡片逐筆顯示，可用期間篩選或「最近 20」查看。` } : {}),
-    actions: [{ label: "分類排行", text: "分類排行" }, { label: "最近紀錄", text: "最近 5" }],
+    actions: isMonthPeriod(command.period)
+      ? [monthlyScopeAction(command.period, command.filter.kind, local.date), { label: "最近紀錄", text: "最近 5" }]
+      : [{ label: "分類排行", text: "分類排行" }, { label: "最近紀錄", text: "最近 5" }],
   }));
 }
 
@@ -437,7 +441,12 @@ async function queryRanking(
   }));
 }
 
-function periodRange(date: string, period: Extract<LedgerCommand, { kind: "period" }>["period"]): { start: string; end: string; title: string } {
+function periodRange(date: string, period: PeriodSelection): { start: string; end: string; title: string } {
+  if (typeof period === "object") {
+    const year = period.year ?? Number(date.slice(0, 4));
+    const start = `${year.toString().padStart(4, "0")}-${period.month.toString().padStart(2, "0")}-01`;
+    return { start, end: shiftMonth(start, 1), title: `${year}/${period.month.toString().padStart(2, "0")}` };
+  }
   if (period === "today" || period === "yesterday") {
     const start = period === "today" ? date : shiftCalendarDate(date, -1);
     return { start, end: shiftCalendarDate(start, 1), title: period === "today" ? "今天" : "昨天" };
@@ -452,6 +461,27 @@ function periodRange(date: string, period: Extract<LedgerCommand, { kind: "perio
   const thisMonth = `${date.slice(0, 7)}-01`;
   const start = period === "month" ? thisMonth : shiftMonth(thisMonth, -1);
   return { start, end: shiftMonth(start, 1), title: period === "month" ? `${start.slice(0, 4)}/${start.slice(5, 7)}` : `上月 ${start.slice(0, 4)}/${start.slice(5, 7)}` };
+}
+
+function isMonthPeriod(period: PeriodSelection): boolean {
+  return typeof period === "object" || period === "month" || period === "last_month";
+}
+
+function monthlyScopeAction(
+  period: PeriodSelection,
+  filterKind: CommandFilter["kind"],
+  eventDate: string,
+): { label: string; text: string } {
+  const target = filterKind === "shared" ? "個人" : "共同";
+  if (typeof period !== "object") {
+    return { label: `${target}月報`, text: `${target}月報` };
+  }
+  const year = period.year ?? Number(eventDate.slice(0, 4));
+  const month = period.month;
+  return {
+    label: `${target}月報`,
+    text: `${target}${year}年${month}月月報`,
+  };
 }
 
 function shiftMonth(firstOfMonth: string, amount: number): string {

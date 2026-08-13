@@ -591,6 +591,31 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await admin.query("UPDATE ledger SET default_scope='personal' WHERE id=$1", [ledgerId]);
   });
 
+  it("returns personal and shared reports for a named calendar month", async () => {
+    await insertTextEvent("E-july-personal", "M-july-personal", "個人 2026/7/15 咖啡 70");
+    await expect(processNextInboundEvent(pool, { generatePublicId: () => "J7YPR700" }))
+      .resolves.toMatchObject({ outcome: "applied" });
+    await insertTextEvent("E-july-shared", "M-july-shared", "共同 2026/7/20 晚餐 300");
+    await expect(processNextInboundEvent(pool, { generatePublicId: () => "J7YSH300" }))
+      .resolves.toMatchObject({ outcome: "applied" });
+
+    for (const [eventId, text, expected] of [
+      ["E-july-report", "7月月報", "2026/07 小明個人：1 筆，合計 70 元"],
+      ["E-july-shared-report", "共同7月月報", "2026/07 共同：1 筆，合計 300 元"],
+    ] as const) {
+      await insertTextEvent(eventId, `M-${eventId}`, text);
+      await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
+      const reply = await pool.query<{ alt_text: string; payload: unknown }>(
+        `SELECT payload_json->'messages'->0->>'altText' AS alt_text,
+                payload_json AS payload
+           FROM outbox_message WHERE source_webhook_event_id=$1`,
+        [eventId],
+      );
+      expect(reply.rows[0]?.alt_text).toContain(expected);
+      expect(JSON.stringify(reply.rows[0]?.payload)).toContain("月報");
+    }
+  });
+
   async function insertTextEvent(
     eventId: string,
     messageId: string,

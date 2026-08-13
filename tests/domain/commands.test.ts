@@ -16,6 +16,13 @@ describe("parseLedgerCommand", () => {
     ["本週 共同", { kind: "period", period: "week", filter: { kind: "shared" } }],
     ["上週", { kind: "period", period: "last_week", filter: { kind: "personal" } }],
     ["月報", { kind: "period", period: "month", filter: { kind: "personal" } }],
+    ["共同月報", { kind: "period", period: "month", filter: { kind: "shared" } }],
+    ["個人月報", { kind: "period", period: "month", filter: { kind: "personal" } }],
+    ["7月月報", { kind: "period", period: { kind: "calendar_month", year: null, month: 7 }, filter: { kind: "personal" } }],
+    ["共同7月月報", { kind: "period", period: { kind: "calendar_month", year: null, month: 7 }, filter: { kind: "shared" } }],
+    ["7月共同月報", { kind: "period", period: { kind: "calendar_month", year: null, month: 7 }, filter: { kind: "shared" } }],
+    ["2025年7月月報", { kind: "period", period: { kind: "calendar_month", year: 2025, month: 7 }, filter: { kind: "personal" } }],
+    ["2025年7月月報 共同", { kind: "period", period: { kind: "calendar_month", year: 2025, month: 7 }, filter: { kind: "shared" } }],
     ["上月", { kind: "period", period: "last_month", filter: { kind: "personal" } }],
     ["找 牛肉麵", { kind: "search", keyword: "牛肉麵" }],
     ["搜尋 約會 晚餐", { kind: "search", keyword: "約會 晚餐" }],
@@ -39,7 +46,7 @@ describe("parseLedgerCommand", () => {
     expect(parseLedgerCommand(input)).toEqual({ kind: "command", command: expected });
   });
 
-  it.each(["最近 0", "最近 21", "最近 五", "找", "搜尋 ", "切換 共同模式", "改 #K7M2Q9TX 金額 -1", "本月 不知道", "取消 150"])(
+  it.each(["最近 0", "最近 21", "最近 五", "找", "搜尋 ", "切換 共同模式", "改 #K7M2Q9TX 金額 -1", "本月 不知道", "13月月報", "取消 150"])(
     "keeps malformed reserved input out of create: %s",
     (input) => expect(parseLedgerCommand(input).kind).toBe("invalid"),
   );
