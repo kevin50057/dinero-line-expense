@@ -574,13 +574,36 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     expect(remaining.rows[0]?.count).toBe("0");
   });
 
-  async function insertTextEvent(eventId: string, messageId: string, text: string, userId = "U-ming"): Promise<void> {
+  it("forces a bare one-to-one entry to personal even while the group mode is shared", async () => {
+    await admin.query("UPDATE ledger SET default_scope='shared' WHERE id=$1", [ledgerId]);
+    await insertTextEvent("E-private-create", "M-private-create", "私訊咖啡 80", "U-ming", "user");
+    await expect(processNextInboundEvent(pool, {
+      generatePublicId: () => "PRVATE01",
+    })).resolves.toMatchObject({ outcome: "applied", publicId: "PRVATE01" });
+
+    const result = await pool.query<{ scope: string; owner: string }>(
+      `SELECT e.scope::text, m.line_user_id AS owner
+         FROM expense_transaction e
+         JOIN member m ON m.id=e.personal_owner_member_id
+        WHERE e.public_id='PRVATE01'`,
+    );
+    expect(result.rows[0]).toEqual({ scope: "personal", owner: "U-ming" });
+    await admin.query("UPDATE ledger SET default_scope='personal' WHERE id=$1", [ledgerId]);
+  });
+
+  async function insertTextEvent(
+    eventId: string,
+    messageId: string,
+    text: string,
+    userId = "U-ming",
+    chatType: "group" | "user" = "group",
+  ): Promise<void> {
     await admin.query(
       `INSERT INTO inbound_event
        (webhook_event_id, ledger_id, event_type, line_message_id, line_event_at, payload_json)
        VALUES ($1, $2, 'message', $3, '2026-08-13T04:10:00.123Z', $4::jsonb)`,
       [eventId, ledgerId, messageId, JSON.stringify({
-        destination: "U-bot", source: { userId },
+        destination: "U-bot", source: { chatType, userId },
         message: { type: "text", text },
         replyTokenCiphertext: Buffer.from(`cipher-${eventId}`).toString("base64"),
       })],

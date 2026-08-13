@@ -44,6 +44,11 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
        RETURNING id::text AS id`,
     );
     ledgerId = ledger.rows[0]!.id;
+    await adminClient.query(
+      `INSERT INTO member (ledger_id, line_user_id, display_name)
+       VALUES ($1, 'U-private', '私聊會員')`,
+      [ledgerId],
+    );
 
     pool = new Pool({
       connectionString: testDatabaseUrl,
@@ -66,6 +71,7 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
     );
     const inbox = new PostgresLineEventInbox(pool, {
       encryptDeliveryCredential,
+      privateLedgerGroupId: "C-ledger",
     });
 
     await inbox.acceptBatch("U-bot", [
@@ -161,6 +167,38 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
       [ledgerId],
     );
     expect(result.rows[0]?.count).toBe("1");
+  });
+
+  it("routes a one-to-one message to the member's configured ledger", async () => {
+    const inbox = testInbox();
+    const privateMessage = {
+      ...textEvent("E-private", "M-private", "咖啡 80"),
+      source: { type: "user", userId: "U-private" },
+    };
+
+    await inbox.acceptBatch("U-bot", [acceptedEvent(privateMessage)]);
+
+    const result = await pool.query<{ ledger_id: string; payload_json: unknown }>(
+      `SELECT ledger_id::text, payload_json FROM inbound_event
+        WHERE webhook_event_id = 'E-private'`,
+    );
+    expect(result.rows[0]).toMatchObject({
+      ledger_id: ledgerId,
+      payload_json: { source: { chatType: "user", userId: "U-private" } },
+    });
+  });
+
+  it("ignores an unknown one-to-one sender without persisting content", async () => {
+    const inbox = testInbox();
+    const privateMessage = {
+      ...textEvent("E-private-stranger", "M-private-stranger", "秘密 999"),
+      source: { type: "user", userId: "U-stranger" },
+    };
+    await inbox.acceptBatch("U-bot", [acceptedEvent(privateMessage, false)]);
+    const result = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM inbound_event WHERE webhook_event_id='E-private-stranger'",
+    );
+    expect(result.rows[0]?.count).toBe("0");
   });
 
   it("rolls back the whole batch when any event has no ledger", async () => {
@@ -266,6 +304,7 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
     return new PostgresLineEventInbox(pool, {
       encryptDeliveryCredential: (plaintext) =>
         Buffer.from(`encrypted:${plaintext}`, "utf8"),
+      privateLedgerGroupId: "C-ledger",
     });
   }
 });

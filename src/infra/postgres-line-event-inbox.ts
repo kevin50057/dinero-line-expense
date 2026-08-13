@@ -11,6 +11,7 @@ export type EncryptDeliveryCredential = (
 
 export interface PostgresLineEventInboxOptions {
   encryptDeliveryCredential: EncryptDeliveryCredential;
+  privateLedgerGroupId: string;
 }
 
 export class LineInboxLedgerNotFoundError extends Error {
@@ -36,6 +37,7 @@ export class InvalidLineInboxEventError extends Error {
 interface AuthorizedTextPayload {
   destination: string;
   source: {
+    chatType: "group" | "user";
     userId: string;
   };
   message: {
@@ -80,10 +82,12 @@ interface InboxInsert {
 export class PostgresLineEventInbox implements LineEventInbox {
   readonly #pool: Pool;
   readonly #encryptDeliveryCredential: EncryptDeliveryCredential;
+  readonly #privateLedgerGroupId: string;
 
   constructor(pool: Pool, options: PostgresLineEventInboxOptions) {
     this.#pool = pool;
     this.#encryptDeliveryCredential = options.encryptDeliveryCredential;
+    this.#privateLedgerGroupId = options.privateLedgerGroupId;
   }
 
   async acceptBatch(
@@ -101,7 +105,7 @@ export class PostgresLineEventInbox implements LineEventInbox {
     try {
       await client.query("BEGIN");
 
-      const ledgerIdsByGroup = new Map<string, string>();
+      const ledgerIdsBySource = new Map<string, string>();
       for (const acceptedEvent of events) {
         // Events outside this product's configured group have no ledger to
         // attach to and cannot cause a side effect. Acknowledge them without
@@ -112,15 +116,26 @@ export class PostgresLineEventInbox implements LineEventInbox {
           continue;
         }
 
-        const groupId = acceptedEvent.event.source.groupId;
-        if (groupId === undefined || groupId.length === 0) {
-          throw new InvalidLineInboxEventError("group_id_missing");
-        }
-
-        let ledgerId = ledgerIdsByGroup.get(groupId);
+        const source = acceptedEvent.event.source;
+        const sourceKey = source.type === "user"
+          ? `user:${source.userId ?? ""}`
+          : `group:${source.groupId ?? ""}`;
+        let ledgerId = ledgerIdsBySource.get(sourceKey);
         if (ledgerId === undefined) {
-          ledgerId = await resolveLedgerId(client, groupId);
-          ledgerIdsByGroup.set(groupId, ledgerId);
+          if (source.type === "user" && source.userId !== undefined) {
+            ledgerId = await resolvePrivateLedgerId(
+              client,
+              this.#privateLedgerGroupId,
+              source.userId,
+            );
+          } else {
+            const groupId = source.groupId;
+            if (groupId === undefined || groupId.length === 0) {
+              throw new InvalidLineInboxEventError("group_id_missing");
+            }
+            ledgerId = await resolveLedgerId(client, groupId);
+          }
+          ledgerIdsBySource.set(sourceKey, ledgerId);
         }
 
         const insert = await this.#toInboxInsert(
@@ -208,7 +223,10 @@ export class PostgresLineEventInbox implements LineEventInbox {
 
     const payload: AuthorizedTextPayload = {
       destination,
-      source: { userId },
+      source: {
+        chatType: event.source.type === "user" ? "user" : "group",
+        userId,
+      },
       message: {
         type: "text",
         text: event.message.text,
@@ -255,10 +273,32 @@ function isUnroutableUnauthorizedEvent(event: AcceptedLineEvent): boolean {
   }
 
   return (
+    event.event.source.type === "user" ||
     event.authorization.reason === "source_not_group" ||
     event.authorization.reason === "group_id_missing" ||
     event.authorization.reason === "group_not_allowed"
   );
+}
+
+async function resolvePrivateLedgerId(
+  client: PoolClient,
+  groupId: string,
+  lineUserId: string,
+): Promise<string> {
+  const result = await client.query<{ id: string }>(
+    `SELECT l.id::text AS id
+       FROM ledger l
+       JOIN member m ON m.ledger_id = l.id
+      WHERE l.line_group_id = $1
+        AND m.line_user_id = $2
+        AND m.is_active`,
+    [groupId, lineUserId],
+  );
+  const ledgerId = result.rows[0]?.id;
+  if (result.rowCount !== 1 || ledgerId === undefined) {
+    throw new LineInboxLedgerNotFoundError();
+  }
+  return ledgerId;
 }
 
 async function resolveLedgerId(

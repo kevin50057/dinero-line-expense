@@ -22,6 +22,7 @@ const pool = new Pool({
 });
 const inbox = new PostgresLineEventInbox(pool, {
   encryptDeliveryCredential: (plaintext) => credentialCipher.encrypt(plaintext),
+  privateLedgerGroupId: config.line.groupId,
 });
 const outbox = new PostgresLineReplyOutboxDispatcher({
   pool,

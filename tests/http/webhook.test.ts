@@ -47,6 +47,27 @@ describe("handleLineWebhook", () => {
     );
   });
 
+  it("authorizes a configured member in a one-to-one chat", async () => {
+    const acceptBatch = vi.fn<LineEventInbox["acceptBatch"]>().mockResolvedValue();
+    const privateEvent = {
+      ...messageEvent(),
+      source: { type: "user", userId: "U-ming" },
+    };
+    const body = signedBody([privateEvent]);
+
+    const result = await handleLineWebhook(body.rawBody, body.signature, {
+      channelSecret,
+      allowedGroupId: "C-ledger",
+      allowedMemberUserIds: new Set(["U-ming", "U-mei"]),
+      inbox: { acceptBatch },
+    });
+
+    expect(result).toEqual({ status: 200, code: "accepted" });
+    expect(acceptBatch).toHaveBeenCalledWith("U-bot", [
+      expect.objectContaining({ authorization: { authorized: true } }),
+    ]);
+  });
+
   it("fails closed before calling the inbox when the signature is invalid", async () => {
     const acceptBatch = vi.fn<LineEventInbox["acceptBatch"]>();
     const body = signedBody([messageEvent()]);

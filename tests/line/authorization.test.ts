@@ -97,12 +97,25 @@ describe("authorizeLineEvent", () => {
     }
   });
 
-  it("rejects non-group and malformed group sources", () => {
+  it("allows an authorized member in a one-to-one chat", () => {
     expect(
       authorizeLineEvent(
         event("message", { type: "user", userId: "U-ming" }),
         policy,
       ),
+    ).toEqual({ authorized: true });
+
+    expect(
+      authorizeLineEvent(
+        event("message", { type: "user", userId: "U-stranger" }),
+        policy,
+      ),
+    ).toEqual({ authorized: false, reason: "member_not_allowed" });
+  });
+
+  it("rejects unsupported and malformed group sources", () => {
+    expect(
+      authorizeLineEvent(event("message", { type: "room", roomId: "R-1", userId: "U-ming" }), policy),
     ).toEqual({ authorized: false, reason: "source_not_group" });
 
     expect(

@@ -65,7 +65,7 @@ interface LedgerMember {
 
 interface TextPayload {
   destination: string;
-  source: { userId: string };
+  source: { chatType: "group" | "user"; userId: string };
   message: { type: "text"; text: string };
   replyTokenCiphertext?: string;
 }
@@ -348,7 +348,7 @@ async function processMessage(
   const parsed = parseExpenseMessage(payload.message.text, {
     eventTimestamp: event.line_event_at,
     timezone: identity.timezone,
-    defaultScope: identity.default_scope,
+    defaultScope: payload.source.chatType === "user" ? "personal" : identity.default_scope,
   });
   if (!parsed.ok) {
     await enqueueReply(
@@ -758,7 +758,10 @@ function decodeTextPayload(value: unknown): TextPayload | null {
   if (typeof token === "string" && decodeCiphertext(token) === null) return null;
   return {
     destination: value.destination,
-    source: { userId: value.source.userId },
+    source: {
+      chatType: value.source.chatType === "user" ? "user" : "group",
+      userId: value.source.userId,
+    },
     message: { type: "text", text: value.message.text },
     ...(typeof token === "string" ? { replyTokenCiphertext: token } : {}),
   };
