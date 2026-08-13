@@ -6,10 +6,10 @@ import type { CategoryCode, MealCode } from "./types.js";
 
 export type LedgerCommand =
   | { readonly kind: "detail"; readonly publicId: string }
-  | { readonly kind: "recent"; readonly limit: number }
+  | { readonly kind: "recent"; readonly limit: number; readonly filter: CommandFilter }
   | { readonly kind: "period"; readonly period: "today" | "yesterday" | "week" | "last_week" | "month" | "last_month"; readonly filter: CommandFilter }
   | { readonly kind: "search"; readonly keyword: string }
-  | { readonly kind: "ranking" }
+  | { readonly kind: "ranking"; readonly filter: Exclude<CommandFilter, { readonly kind: "tag" }> }
   | { readonly kind: "mode"; readonly scope: "shared" | "personal" | null }
   | { readonly kind: "update"; readonly publicId: string; readonly change: UpdateChange }
   | { readonly kind: "tags"; readonly operation: "add" | "remove"; readonly publicId: string; readonly tags: readonly string[] }
@@ -51,14 +51,24 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   let match = new RegExp(`^查 #${PUBLIC_ID}$`, "iu").exec(text);
   if (match) return command({ kind: "detail", publicId: match[1]!.toUpperCase() });
 
-  match = /^最近(?: (\S+))?$/u.exec(text);
+  match = /^最近(?: (\S+))?(?: (\S+))?$/u.exec(text);
   if (match) {
-    const raw = match[1];
-    const limit = raw === undefined ? 10 : Number(raw);
-    if (!/^\d+$/u.test(raw ?? "10") || !Number.isInteger(limit) || limit < 1 || limit > 20) {
+    const first = match[1];
+    const second = match[2];
+    const rawLimit = first !== undefined && /^\d+$/u.test(first) ? first : undefined;
+    const rawFilter = rawLimit === undefined ? first : second;
+    if (rawLimit === undefined && second !== undefined) {
+      return invalid("最近格式：最近、最近 5、最近 5 共同或最近 5 全部。");
+    }
+    const limit = rawLimit === undefined ? 10 : Number(rawLimit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
       return invalid("最近筆數必須是 1 到 20。範例：最近 5");
     }
-    return command({ kind: "recent", limit });
+    const filter = parseFilter(rawFilter);
+    if (filter === null || filter.kind === "tag") {
+      return invalid("最近篩選可用：個人、共同或全部。範例：最近 5 共同");
+    }
+    return command({ kind: "recent", limit, filter });
   }
 
   match = /^(找|搜尋)(?: (.+))?$/u.exec(text);
@@ -68,7 +78,12 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
     return command({ kind: "search", keyword });
   }
 
-  if (text === "排行" || text === "分類排行") return command({ kind: "ranking" });
+  match = /^(排行|分類排行)(?: (\S+))?$/u.exec(text);
+  if (match) {
+    const filter = parseFilter(match[2]);
+    if (filter === null || filter.kind === "tag") return invalid("分類排行篩選可用：個人、共同或全部。");
+    return command({ kind: "ranking", filter });
+  }
   if (text === "目前模式") return command({ kind: "mode", scope: null });
   if (text === "切換共同模式" || text === "共同模式") return command({ kind: "mode", scope: "shared" });
   if (text === "切換個人模式" || text === "個人模式") return command({ kind: "mode", scope: "personal" });
@@ -119,7 +134,8 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
 }
 
 function parseFilter(raw: string | undefined): CommandFilter | null {
-  if (raw === undefined) return { kind: "all" };
+  if (raw === undefined) return { kind: "personal" };
+  if (raw === "全部") return { kind: "all" };
   if (raw === "共同") return { kind: "shared" };
   if (raw === "個人") return { kind: "personal" };
   if (/^#[^#\s]{1,20}$/u.test(raw)) return { kind: "tag", name: raw.slice(1).normalize("NFKC").toLocaleLowerCase("zh-TW") };

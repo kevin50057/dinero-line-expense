@@ -155,7 +155,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
       `SELECT payload_json AS payload FROM outbox_message WHERE source_webhook_event_id='E-recent'`,
     );
     expect(reply.rows[0]?.payload.messages[0]).toMatchObject({ type: "flex" });
-    expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("最近 2 筆");
+    expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("小明個人最近 1 筆");
   });
 
   it("updates an owned personal expense and records exactly one before/after audit", async () => {
@@ -205,7 +205,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
       `SELECT payload_json AS payload FROM outbox_message WHERE source_webhook_event_id='E-month'`,
     );
     expect(reply.rows[0]?.payload.messages[0]).toMatchObject({ type: "flex" });
-    expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("2 筆，合計 260 元");
+    expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("1 筆，合計 180 元");
   });
 
   it("returns Flex cards for weekly reports, search and category ranking", async () => {
@@ -360,6 +360,25 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     );
     expect(modeReply.rows[0]).toMatchObject({ type: "flex" });
     expect(modeReply.rows[0]?.alt_text).toContain("已切換為共同模式");
+  });
+
+  it("scopes default recent and monthly cards to the member who clicks", async () => {
+    await insertTextEvent("E-mei-personal", "M-mei-personal", "個人 女友咖啡 70", "U-mei");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "ME2PERSN" }))
+      .toMatchObject({ outcome: "applied", publicId: "ME2PERSN" });
+
+    for (const [eventId, text, expected] of [["E-mei-recent", "最近 5", "女友咖啡"], ["E-mei-month", "月報", "小美個人"]] as const) {
+      await insertTextEvent(eventId, `M-${eventId}`, text, "U-mei");
+      expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+      const reply = await pool.query<{ alt_text: string }>(
+        `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+           FROM outbox_message WHERE source_webhook_event_id=$1`,
+        [eventId],
+      );
+      expect(reply.rows[0]?.alt_text).toContain(expected);
+      expect(reply.rows[0]?.alt_text).not.toContain("牛肉麵");
+      expect(reply.rows[0]?.alt_text).not.toContain("早餐");
+    }
   });
 
   it("pairs exactly one second member and returns an idempotent confirmation", async () => {

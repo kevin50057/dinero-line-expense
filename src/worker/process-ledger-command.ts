@@ -109,13 +109,13 @@ export async function processLedgerCommand(
     case "detail":
       return queryDetail(client, actor, command.publicId);
     case "recent":
-      return queryRecent(client, actor, command.limit);
+      return queryRecent(client, actor, command.limit, command.filter);
     case "period":
       return queryPeriod(client, actor, event, command);
     case "search":
       return querySearch(client, actor, command.keyword);
     case "ranking":
-      return queryRanking(client, actor, event);
+      return queryRanking(client, actor, event, command.filter);
     case "mode":
       return changeLedgerMode(client, actor, command.scope);
     case "void":
@@ -208,24 +208,41 @@ async function queryDetail(client: PoolClient, actor: CommandActor, publicId: st
   }));
 }
 
-async function queryRecent(client: PoolClient, actor: CommandActor, limit: number): Promise<LedgerCommandResult> {
+async function queryRecent(
+  client: PoolClient,
+  actor: CommandActor,
+  limit: number,
+  filter: Extract<LedgerCommand, { kind: "recent" }>["filter"],
+): Promise<LedgerCommandResult> {
+  const params: unknown[] = [actor.ledgerId, limit];
+  let filterSql = "";
+  if (filter.kind === "personal") {
+    params.push(actor.memberId);
+    filterSql = ` AND et.scope='personal' AND et.personal_owner_member_id=$${params.length}`;
+  } else if (filter.kind === "shared") {
+    filterSql = " AND et.scope='shared'";
+  }
   const result = await client.query<ListRow>(
     `SELECT public_id, amount_minor::text, description, scope::text,
             occurred_on::text, occurred_at
-       FROM expense_transaction
-      WHERE ledger_id = $1 AND status = 'active'
+       FROM expense_transaction et
+      WHERE ledger_id = $1 AND status = 'active'${filterSql}
       ORDER BY created_at DESC, id DESC
       LIMIT $2`,
-    [actor.ledgerId, limit],
+    params,
   );
-  if (result.rows.length === 0) return applied("目前沒有有效的記帳紀錄。");
+  const scopeLabel = filter.kind === "personal" ? `${actor.displayName}個人` : filter.kind === "shared" ? "共同" : "全部";
+  if (result.rows.length === 0) {
+    const reply = `${scopeLabel}目前沒有有效的記帳紀錄。`;
+    return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 記帳列表", title: `${scopeLabel}最近紀錄`, note: reply, actions: [{ label: "查看共同", text: "最近 5 共同" }, { label: "查看全部", text: "最近 5 全部" }] }));
+  }
   const reply = [
-    `最近 ${result.rows.length} 筆`,
+    `${scopeLabel}最近 ${result.rows.length} 筆`,
     ...result.rows.map(formatListRow),
     `合計：${money(sumRows(result.rows))}`,
   ].join("\n");
-  return applied(reply, undefined, listCard(`最近 ${result.rows.length} 筆`, result.rows, reply, "按輸入時間排序", [
-    { label: "本月報表", text: "本月" }, { label: "找一筆", text: "說明" },
+  return applied(reply, undefined, listCard(`${scopeLabel}最近 ${result.rows.length} 筆`, result.rows, reply, "按輸入時間排序", [
+    { label: "我的月報", text: "本月" }, { label: "共同最近", text: "最近 5 共同" },
   ]));
 }
 
@@ -261,7 +278,7 @@ async function queryPeriod(
       ORDER BY et.occurred_on DESC, et.occurred_at DESC NULLS LAST, et.created_at DESC`,
     params,
   );
-  const suffix = command.filter.kind === "all" ? "" : command.filter.kind === "tag" ? ` #${command.filter.name}` : command.filter.kind === "shared" ? " 共同" : " 個人";
+  const suffix = command.filter.kind === "all" ? " 全部" : command.filter.kind === "tag" ? ` #${command.filter.name}` : command.filter.kind === "shared" ? " 共同" : ` ${actor.displayName}個人`;
   if (rows.rows.length === 0) {
     const reply = `${title}${suffix}：0 筆，合計 0 元`;
     return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 支出報表", title: `${title}${suffix}`, summary: "0 元", note: "這個期間目前沒有符合條件的支出。", actions: [{ label: "最近紀錄", text: "最近 5" }] }));
@@ -311,19 +328,33 @@ async function querySearch(client: PoolClient, actor: CommandActor, keyword: str
   return applied(reply, undefined, listCard(`搜尋「${keyword}」`, result.rows, reply, `找到 ${result.rows.length} 筆`, [{ label: "本月報表", text: "本月" }]));
 }
 
-async function queryRanking(client: PoolClient, actor: CommandActor, event: CommandEvent): Promise<LedgerCommandResult> {
+async function queryRanking(
+  client: PoolClient,
+  actor: CommandActor,
+  event: CommandEvent,
+  filter: Extract<LedgerCommand, { kind: "ranking" }>["filter"],
+): Promise<LedgerCommandResult> {
   const local = toZonedMinute(event.eventAt, actor.timezone);
   if (local === null) return rejected("無法判定帳本日期，請稍後再試。");
   const { start, end, title } = periodRange(local.date, "month");
-  const categories = await periodCategoryTotals(client, actor.ledgerId, start, end, "", []);
+  let filterSql = "";
+  const extra: unknown[] = [];
+  if (filter.kind === "personal") {
+    extra.push(actor.memberId);
+    filterSql = " AND et.scope='personal' AND et.personal_owner_member_id=$4";
+  } else if (filter.kind === "shared") {
+    filterSql = " AND et.scope='shared'";
+  }
+  const categories = await periodCategoryTotals(client, actor.ledgerId, start, end, filterSql, extra);
   const total = categories.reduce((sum, row) => sum + Number(row.total), 0);
+  const scopeLabel = filter.kind === "personal" ? `${actor.displayName}個人` : filter.kind === "shared" ? "共同" : "全部";
   const reply = categories.length === 0
-    ? `${title}分類排行：目前沒有有效支出。`
-    : [`${title}分類排行`, ...categories.map((row, index) => `${index + 1}. ${row.name} ${money(row.total)}`), `合計：${money(total)}`].join("\n");
+    ? `${title}${scopeLabel}分類排行：目前沒有有效支出。`
+    : [`${title}${scopeLabel}分類排行`, ...categories.map((row, index) => `${index + 1}. ${row.name} ${money(row.total)}`), `合計：${money(total)}`].join("\n");
   return applied(reply, undefined, infoCard({
     altText: reply,
     kicker: "DINERO 本月排行",
-    title: "分類消費榜",
+    title: `${scopeLabel}分類消費榜`,
     summary: money(total),
     rows: categories.map((row, index) => ({
       label: `#${index + 1} ${row.name}`,
@@ -331,7 +362,9 @@ async function queryRanking(client: PoolClient, actor: CommandActor, event: Comm
       meta: total === 0 ? "0%" : `${Math.round(Number(row.total) / total * 100)}%`,
     })),
     note: categories.length === 0 ? "本月目前還沒有支出。" : "分類占比以本月有效支出計算。",
-    actions: [{ label: "本月明細", text: "本月" }, { label: "上月報表", text: "上月" }],
+    actions: filter.kind === "personal"
+      ? [{ label: "我的月報", text: "本月" }, { label: "共同排行", text: "分類排行 共同" }]
+      : [{ label: "我的排行", text: "分類排行" }, { label: "全部排行", text: "分類排行 全部" }],
   }));
 }
 

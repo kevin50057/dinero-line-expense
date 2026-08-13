@@ -456,6 +456,7 @@ Given 同一帳本有多筆 active 交易
 And 其中有一筆剛補登但消費日期較舊的交易
 When 小明傳送「最近」
 Then 預設最多回傳 10 筆
+And 只包含 personal owner 為小明的交易
 And 依 created at 由新到舊排序
 And 剛補登的舊日期交易可出現在最前方
 And created at 相同時使用 public ID 作穩定 tie-breaker
@@ -470,13 +471,16 @@ And occurred date 與 time 都相同時依 created at 再依 public ID 作穩定
 ### A35 — 最近查詢可指定筆數且排除已取消資料
 
 ```gherkin
-Given 帳本有 8 筆 active 交易與 2 筆 voided 交易
+Given 小明有 8 筆 active 個人交易與 2 筆 voided 個人交易
 When 小明傳送「最近 5」
 Then 回傳排序後的前 5 筆 active 交易
 And 不包含 voided 交易
+
+When 小明傳送「最近 5 共同」或「最近 5 全部」
+Then 才分別回傳共同支出或跨兩人成員的資料
 ```
 
-### A36 — 本月摘要同時顯示總額、共同與兩人個人小計
+### A36 — 本月摘要預設依操作者個人化並可明確查看共同或全部
 
 ```gherkin
 Given 本月有 shared 支出 500
@@ -485,17 +489,19 @@ And 小美的 personal 支出為 80
 And 上述 active 支出的大分類小計為食物 550 與交通 150
 And 另有一筆已取消的 shared 支出 300
 When 小明傳送「本月」
-Then 回覆本月總額為 700
-And shared 小計為 500
-And 小明 personal 小計為 120
-And 小美 personal 小計為 80
-And 食物大分類小計為 550
-And 交通大分類小計為 150
+Then 回覆本月總額為小明 personal 的 120
+And 不包含 shared 500 或小美 personal 80
 And 不計入已取消的 300
 
 When 小明傳送「本月 個人」
 Then 結果只包含小明 personal 支出 120
 And 這是查詢篩選而不是隱私隔離
+
+When 小明傳送「本月 共同」
+Then 結果只包含 shared 支出 500
+
+When 小明傳送「本月 全部」
+Then 回覆不重複總額 700、shared 小計 500、小明 personal 120、小美 personal 80 與對應分類小計
 ```
 
 ### A37 — 多標籤統計不重複累加同一筆交易
