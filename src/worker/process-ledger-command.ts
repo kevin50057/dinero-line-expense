@@ -199,6 +199,7 @@ async function queryDetail(client: PoolClient, actor: CommandActor, publicId: st
     ? [
         { label: "改名稱", data: `ui=edit_name&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 項目 ${expense.description}` },
         { label: "改金額", data: `ui=edit_amount&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 金額 ${expense.amount_minor}` },
+        { label: "改分類", data: `ui=edit_category&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 分類 ${expense.category_name}` },
         { label: "改標籤", data: `ui=edit_tags&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 標籤 ${tags.map((name) => `#${name}`).join(" ")}` },
         { label: "取消這筆", text: `取消 #${expense.public_id}` },
       ]

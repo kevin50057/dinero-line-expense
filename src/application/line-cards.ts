@@ -131,19 +131,18 @@ function body(contents: readonly object[]) {
 
 function footer(actions: readonly CardAction[]) {
   if (actions.length === 0) return undefined;
-  const buttons = actions.slice(0, 4).map((action) => actionButton(action));
+  const buttons = actions.slice(0, 6).map((action) => actionButton(action));
+  const rows = [];
+  for (let index = 0; index < buttons.length; index += 2) {
+    rows.push({ type: "box", layout: "horizontal", spacing: "sm", contents: buttons.slice(index, index + 2) });
+  }
   return {
     type: "box",
     layout: "vertical",
     paddingAll: "12px",
     backgroundColor: PAPER,
     spacing: "sm",
-    contents: buttons.length <= 2
-      ? [{ type: "box", layout: "horizontal", spacing: "sm", contents: buttons }]
-      : [
-          { type: "box", layout: "horizontal", spacing: "sm", contents: buttons.slice(0, 2) },
-          { type: "box", layout: "horizontal", spacing: "sm", contents: buttons.slice(2, 4) },
-        ],
+    contents: rows,
   };
 }
 

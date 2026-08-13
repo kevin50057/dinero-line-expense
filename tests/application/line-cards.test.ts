@@ -49,4 +49,22 @@ describe("LINE Flex card builders", () => {
     expect(JSON.stringify(parsed)).toContain('"inputOption":"openKeyboard"');
     expect(JSON.stringify(parsed)).toContain('"fillInText":"改 #K7M2Q9TX 金額 150"');
   });
+
+  it("keeps a fifth edit action in a third button row", () => {
+    const card = infoCard({
+      altText: "編輯交易",
+      title: "肉蛋吐司",
+      actions: [
+        { label: "改名稱", data: "ui=name", fillInText: "改 #BX73H72A 項目 肉蛋吐司" },
+        { label: "改金額", data: "ui=amount", fillInText: "改 #BX73H72A 金額 85" },
+        { label: "改分類", data: "ui=category", fillInText: "改 #BX73H72A 分類 未分類" },
+        { label: "改標籤", data: "ui=tags", fillInText: "改 #BX73H72A 標籤 #食物午餐" },
+        { label: "取消這筆", text: "取消 #BX73H72A" },
+      ],
+    });
+    const parsed = parseLineReplyPayload({ messages: [card] });
+    expect(JSON.stringify(parsed)).toContain('"label":"改分類"');
+    expect(JSON.stringify(parsed)).toContain('"fillInText":"改 #BX73H72A 分類 未分類"');
+    expect(JSON.stringify(parsed)).toContain('"label":"取消這筆"');
+  });
 });
