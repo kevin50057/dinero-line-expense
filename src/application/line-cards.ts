@@ -159,8 +159,8 @@ function rowBox(row: CardRow) {
     contents: row.action === undefined
       ? details
       : [
-          { type: "box", layout: "vertical", spacing: "xs", flex: 4, contents: details },
-          actionButton(row.action, 1),
+          { type: "box", layout: "vertical", spacing: "xs", flex: 5, contents: details },
+          actionButton(row.action, 2),
         ],
   };
 }
