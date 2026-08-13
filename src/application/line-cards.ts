@@ -49,7 +49,7 @@ export function helpCards(altText: string): LineReplyFlexMessage {
         header("DINERO 快速開始", "一句話就能記帳"),
         body([
           text("牛肉麵 150 #約會", { size: "lg", weight: "bold", color: INK, wrap: true }),
-          text("預設記為共同支出；傳送時段會協助判斷早餐、午餐或晚餐。", { size: "sm", color: MUTED, wrap: true, margin: "md" }),
+          text("初始為個人模式；約會時可一鍵切換共同模式。傳送時段也會協助判斷餐別。", { size: "sm", color: MUTED, wrap: true, margin: "md" }),
           separator("lg"),
           rowBox({ label: "個人支出", value: "個人 咖啡 80" }),
           rowBox({ label: "指定分類", value: "電影 320 #娛樂" }),
@@ -66,8 +66,10 @@ export function helpCards(altText: string): LineReplyFlexMessage {
           rowBox({ label: "搜尋", value: "找 牛肉麵" }),
           separator("md"),
           rowBox({ label: "排行", value: "分類排行" }),
+          separator("md"),
+          rowBox({ label: "約會模式", value: "切換共同模式 / 切換個人模式" }),
         ]),
-        footer([{ label: "本週報表", text: "週報" }, { label: "分類排行", text: "分類排行" }]),
+        footer([{ label: "目前模式", text: "目前模式" }, { label: "本週報表", text: "週報" }]),
       ),
       bubble(
         header("修改與管理", "每筆都有專屬編號"),

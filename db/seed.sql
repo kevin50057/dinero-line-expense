@@ -43,7 +43,7 @@ INSERT INTO ledger (
 VALUES (
   :'ledger_name',
   :'line_group_id',
-  'shared',
+  'personal',
   true,
   'Asia/Taipei'
 )

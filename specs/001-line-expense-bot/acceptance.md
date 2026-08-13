@@ -12,22 +12,22 @@
 
 ## 新增、分類與多標籤
 
-### A01 — 裸格式預設新增共同支出
+### A01 — 裸格式依初始個人模式新增個人支出
 
 ```gherkin
-Given 帳本 default scope 為 shared
+Given 帳本 default scope 為 personal
 And LINE 事件時間是台北時間 2026-08-13 12:10
 When 小明傳送「牛肉麵 150」
 Then 系統只建立 1 筆金額 150 TWD 的 active 交易
 And description 為「牛肉麵」
-And scope 為 shared
+And scope 為 personal
 And payer 為小明
-And personal owner 為 null
+And personal owner 為小明
 And 分類有且只有 food
 And 餐別有且只有 lunch
 And meal source 為 inferred
 And 系統產生且只產生 1 筆 created 事件
-And 回覆包含公開交易編號、共同、牛肉麵、150 元、食物、午餐與自動標記
+And 回覆包含公開交易編號、個人、牛肉麵、150 元、食物、午餐與自動標記
 ```
 
 ### A02 — 明確新增個人或共同支出
@@ -938,7 +938,8 @@ Then 只回傳帶 lunch meal tag 的交易
 
 ```gherkin
 When Bot 加入已允許的記帳群組
-Then 歡迎訊息說明「牛肉麵 150」預設為共同支出
+Then 歡迎訊息說明初始為個人模式且「牛肉麵 150」會歸入傳送者個人支出
+And 歡迎訊息說明可用「切換共同模式」與「切換個人模式」
 And 歡迎訊息說明「個人 咖啡 80」的個人格式
 
 When 已授權成員傳送「說明」、「分類」或「標籤」
@@ -1150,4 +1151,30 @@ Then 不建立 member 且回覆帳本無法接受新成員
 
 When 未授權成員傳送任何不是完全匹配「配對」的訊息
 Then 不保存 user ID、訊息文字或 reply token
+```
+
+### A86 — 群組初始個人模式並可在約會時持久切換共同
+
+```gherkin
+Given 帳本初始 default scope 為 personal
+When 小明傳送「牛肉麵 150」
+Then 新交易 scope 為 personal 且 personal owner 為小明
+
+When 任一 active member 傳送「切換共同模式」或「共同模式」
+Then ledger default scope 原子更新為 shared
+And 回覆 Flex 卡片清楚顯示共同模式
+And 之後小明或小美的裸格式新交易 scope 都為 shared
+
+When 個人模式下小明傳送「共同 晚餐 800」
+Then 該筆 scope 仍為 shared 且帳本模式保持 personal
+
+When 共同模式下小美傳送「個人 咖啡 80」
+Then 該筆 scope 仍為 personal、owner 為小美且帳本模式保持 shared
+
+When 任一人傳送「目前模式」
+Then 回覆 DB 中目前模式且不修改 ledger
+
+When 任一人傳送「切換個人模式」或「個人模式」
+Then ledger default scope 更新為 personal
+And 已存在交易的 scope 與 owner 全部保持不變
 ```

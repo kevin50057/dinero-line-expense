@@ -4,7 +4,7 @@
 
 - 一筆支出永遠屬於一個帳本（`ledger`）；所有關聯都由資料庫保證不能跨帳本。
 - `scope` 是支出的帳務範圍，不是標籤。它使用獨立 enum：`shared` 或 `personal`。
-- MVP 帳本允許裸格式，且 `牛肉麵 150` 一律使用帳本預設值 `shared`；`個人 牛肉麵 150` 才是個人支出。
+- 帳本允許裸格式，`牛肉麵 150` 使用帳本目前的 `default_scope`；初始為 `personal`，可由兩位成員在 LINE 切換，明確 scope 前綴只覆蓋該筆。
 - 建立者、付款人與個人支出的所有人是三個不同概念。改付款人不會連動改所有人。
 - 分類、餐別與自訂標籤共用 `tag`／`transaction_tag`，但由 `tag_type` 保留型別：每筆交易恰好一個分類、至多一個餐別、任意數量自訂標籤。
 - `occurred_on` 永遠有值；精確時間可以未知。不能用訊息送出時間假裝成補登支出的發生時間。
@@ -178,10 +178,10 @@ erDiagram
 
 ### `ledger`
 
-- `default_scope expense_scope NOT NULL DEFAULT 'shared'`。
+- `default_scope expense_scope NOT NULL DEFAULT 'personal'`；此欄位同時是群組目前的持久記帳模式。
 - `allow_bare_entry BOOLEAN NOT NULL DEFAULT true`。
 - `timezone TEXT NOT NULL DEFAULT 'Asia/Taipei'`；日期界線、相對日期與餐別判定都讀這個值，不能讀 DB server timezone。
-- MVP provisioning 必須明確寫入 `default_scope = 'shared'`、`allow_bare_entry = true`。
+- provisioning 必須明確寫入 `default_scope = 'personal'`、`allow_bare_entry = true`。
 
 `default_scope` 只是裸格式的預設。交易落庫時仍要把解析後的 scope 寫進 `expense_transaction.scope`，避免日後改帳本預設時改變舊資料的意義。
 
@@ -491,7 +491,7 @@ UUID 主鍵全域唯一仍不足以證明關聯屬於同一帳本。下列關聯
 
 以下不是後續最佳化，必須和最小可寫入版本一起上線：
 
-1. ledger timezone 與 shared 裸格式預設。
+1. ledger timezone 與目前的個人／共同裸格式模式。
 2. member 授權與 personal owner mutation guard。
 3. 所有同 ledger 複合外鍵。
 4. amount／currency／scope／owner／status 的 check constraint。

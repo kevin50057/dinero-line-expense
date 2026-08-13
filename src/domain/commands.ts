@@ -10,6 +10,7 @@ export type LedgerCommand =
   | { readonly kind: "period"; readonly period: "today" | "yesterday" | "week" | "last_week" | "month" | "last_month"; readonly filter: CommandFilter }
   | { readonly kind: "search"; readonly keyword: string }
   | { readonly kind: "ranking" }
+  | { readonly kind: "mode"; readonly scope: "shared" | "personal" | null }
   | { readonly kind: "update"; readonly publicId: string; readonly change: UpdateChange }
   | { readonly kind: "tags"; readonly operation: "add" | "remove"; readonly publicId: string; readonly tags: readonly string[] }
   | { readonly kind: "void" | "restore"; readonly publicId: string }
@@ -68,6 +69,9 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   }
 
   if (text === "排行" || text === "分類排行") return command({ kind: "ranking" });
+  if (text === "目前模式") return command({ kind: "mode", scope: null });
+  if (text === "切換共同模式" || text === "共同模式") return command({ kind: "mode", scope: "shared" });
+  if (text === "切換個人模式" || text === "個人模式") return command({ kind: "mode", scope: "personal" });
 
   match = /^(今天|今日|昨天|週報|這週|本週|上週|本月|月報|上月)(?: (\S+))?$/u.exec(text);
   if (match) {
@@ -105,7 +109,7 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   // 今天／昨天 are also valid create prefixes (for example
   // 「昨天 牛肉麵 150」), so only their fully matched query forms above are
   // commands. Other reserved verbs must never fall through to create.
-  if (/^(?:查|最近|找|搜尋|排行|分類排行|今日|週報|這週|本週|上週|本月|月報|上月|改|加|移除|取消|還原|說明|幫助|help|分類|標籤|新增分類|刪除分類)(?:\s|$)/iu.test(text)) {
+  if (/^(?:查|最近|找|搜尋|排行|分類排行|目前模式|切換共同模式|切換個人模式|共同模式|個人模式|切換|今日|週報|這週|本週|上週|本月|月報|上月|改|加|移除|取消|還原|說明|幫助|help|分類|標籤|新增分類|刪除分類)(?:\s|$)/iu.test(text)) {
     if (/^(?:新增分類|刪除分類)(?:\s|$)/u.test(text)) {
       return invalid("目前分類是固定清單，不支援新增或刪除分類。");
     }

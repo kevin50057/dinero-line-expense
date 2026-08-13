@@ -79,8 +79,9 @@ export async function processLedgerCommand(
     case "help":
       {
       const reply = [
-        "記帳：牛肉麵 150 #約會（預設共同）",
+        "記帳：牛肉麵 150 #工作（初始為個人模式）",
         "個人：個人 咖啡 80",
+        "模式：切換共同模式、切換個人模式、目前模式",
         "查詢：最近、今天、週報、本月、找 關鍵字、分類排行",
         "修改：改 #編號 金額 180",
         "標籤：加 #編號 標籤 #約會",
@@ -115,6 +116,8 @@ export async function processLedgerCommand(
       return querySearch(client, actor, command.keyword);
     case "ranking":
       return queryRanking(client, actor, event);
+    case "mode":
+      return changeLedgerMode(client, actor, command.scope);
     case "void":
     case "restore":
       return changeStatus(client, actor, event, command.publicId, command.kind);
@@ -123,6 +126,54 @@ export async function processLedgerCommand(
     case "update":
       return updateExpense(client, actor, event, command.publicId, command.change);
   }
+}
+
+async function changeLedgerMode(
+  client: PoolClient,
+  actor: CommandActor,
+  requestedScope: "shared" | "personal" | null,
+): Promise<LedgerCommandResult> {
+  const current = await client.query<{ default_scope: "shared" | "personal" }>(
+    "SELECT default_scope::text FROM ledger WHERE id=$1 FOR UPDATE",
+    [actor.ledgerId],
+  );
+  const currentScope = current.rows[0]?.default_scope;
+  if (currentScope === undefined) return rejected("找不到這個帳本，請稍後再試。");
+
+  const scope = requestedScope ?? currentScope;
+  const label = scope === "shared" ? "共同模式" : "個人模式";
+  const explanation = scope === "shared"
+    ? "接下來你們兩人的裸記帳會算共同支出；明確寫「個人」仍可只記自己。"
+    : "接下來你們兩人的裸記帳會各自算個人支出；約會時可再切換共同模式。";
+  const reply = `目前是${label}。\n${explanation}`;
+  const message = infoCard({
+    altText: reply,
+    kicker: "DINERO 記帳模式",
+    title: label,
+    summary: scope === "shared" ? "兩人共同記帳" : "各自記在個人帳下",
+    note: explanation,
+    actions: [{
+      label: scope === "shared" ? "切回個人模式" : "切換共同模式",
+      text: scope === "shared" ? "切換個人模式" : "切換共同模式",
+    }],
+  });
+
+  if (requestedScope === null || requestedScope === currentScope) {
+    return { outcome: "noop", reply, message };
+  }
+  const updated = await client.query(
+    "UPDATE ledger SET default_scope=$2::expense_scope,updated_at=clock_timestamp() WHERE id=$1",
+    [actor.ledgerId, requestedScope],
+  );
+  if (updated.rowCount !== 1) throw new Error("ledger_mode_update_failed");
+  return applied(`已切換為${label}。\n${explanation}`, undefined, infoCard({
+    altText: `已切換為${label}。${explanation}`,
+    kicker: "DINERO 模式已切換",
+    title: label,
+    summary: scope === "shared" ? "約會一起記 💚" : "回到各自記帳",
+    note: explanation,
+    actions: [{ label: "查看目前模式", text: "目前模式" }],
+  }));
 }
 
 async function queryDetail(client: PoolClient, actor: CommandActor, publicId: string): Promise<LedgerCommandResult> {

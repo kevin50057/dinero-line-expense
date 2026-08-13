@@ -329,6 +329,39 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     expect(delivery.rows[0]?.inbox_payload).toBeNull();
   });
 
+  it("persists a group-wide personal/shared mode while explicit scope still wins", async () => {
+    await insertTextEvent("E-mode-personal", "M-mode-personal", "切換個人模式");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    await insertTextEvent("E-mode-personal-create", "M-mode-personal-create", "早餐 90");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "PERS2NAX" }))
+      .toMatchObject({ outcome: "applied", publicId: "PERS2NAX" });
+    await insertTextEvent("E-mode-explicit", "M-mode-explicit", "共同 午餐 120");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "EXP72CXT" }))
+      .toMatchObject({ outcome: "applied", publicId: "EXP72CXT" });
+
+    const personalMode = await pool.query<{ mode: string; scope: string; has_owner: boolean; explicit_scope: string }>(
+      `SELECT l.default_scope::text AS mode, personal.scope::text AS scope,
+              personal.personal_owner_member_id IS NOT NULL AS has_owner,
+              explicit.scope::text AS explicit_scope
+         FROM ledger l
+         JOIN expense_transaction personal ON personal.ledger_id=l.id AND personal.public_id='PERS2NAX'
+         JOIN expense_transaction explicit ON explicit.ledger_id=l.id AND explicit.public_id='EXP72CXT'
+        WHERE l.id=$1`,
+      [ledgerId],
+    );
+    expect(personalMode.rows[0]).toEqual({ mode: "personal", scope: "personal", has_owner: true, explicit_scope: "shared" });
+
+    await insertTextEvent("E-mode-shared", "M-mode-shared", "切換共同模式");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const modeReply = await pool.query<{ type: string; alt_text: string }>(
+      `SELECT payload_json->'messages'->0->>'type' AS type,
+              payload_json->'messages'->0->>'altText' AS alt_text
+         FROM outbox_message WHERE source_webhook_event_id='E-mode-shared'`,
+    );
+    expect(modeReply.rows[0]).toMatchObject({ type: "flex" });
+    expect(modeReply.rows[0]?.alt_text).toContain("已切換為共同模式");
+  });
+
   it("pairs exactly one second member and returns an idempotent confirmation", async () => {
     const pairingLedger = await admin.query<{ id: string }>(
       "INSERT INTO ledger (name,line_group_id) VALUES ('Pairing ledger','C-pairing') RETURNING id::text",

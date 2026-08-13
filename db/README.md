@@ -36,7 +36,7 @@ psql -X -v ON_ERROR_STOP=1 \
 
 Seed 會明確設定：
 
-- 裸格式預設為 `shared`，並允許裸格式。
+- 裸格式初始為 `personal`，並允許透過 LINE 指令切換群組共用模式。
 - 帳本時區為 `Asia/Taipei`。
 - 8 個 category：食物、交通、娛樂、居家、購物、醫療健康、旅遊、未分類。
 - 5 個 meal：早餐、午餐、下午茶、晚餐、宵夜。
