@@ -11,6 +11,7 @@ export type LedgerCommand =
   | { readonly kind: "search"; readonly keyword: string }
   | { readonly kind: "ranking"; readonly filter: Exclude<CommandFilter, { readonly kind: "tag" }> }
   | { readonly kind: "mode"; readonly scope: "shared" | "personal" | null }
+  | { readonly kind: "nickname"; readonly value: string | null }
   | { readonly kind: "update"; readonly publicId: string; readonly change: UpdateChange }
   | { readonly kind: "tags"; readonly operation: "add" | "remove"; readonly publicId: string; readonly tags: readonly string[] }
   | { readonly kind: "void" | "restore"; readonly publicId: string }
@@ -58,8 +59,18 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   if (text === "分類") return command({ kind: "categories" });
   if (text === "分類規則" || text === "分類知識表") return command({ kind: "category_rules" });
   if (text === "標籤") return command({ kind: "tags_help" });
+  if (text === "我的暱稱" || text === "目前暱稱") return command({ kind: "nickname", value: null });
 
-  let match = new RegExp(`^查 #${PUBLIC_ID}$`, "iu").exec(text);
+  let match = /^(?:設定|修改)暱稱(?: (.+))?$/u.exec(text);
+  if (match) {
+    const nickname = match[1]?.trim() ?? "";
+    if (nickname.length === 0 || [...nickname].length > 20 || /[#\r\n]/u.test(nickname)) {
+      return invalid("暱稱需為 1 到 20 個字，且不可包含 #。範例：設定暱稱 小美");
+    }
+    return command({ kind: "nickname", value: nickname });
+  }
+
+  match = new RegExp(`^查 #${PUBLIC_ID}$`, "iu").exec(text);
   if (match) return command({ kind: "detail", publicId: match[1]!.toUpperCase() });
 
   match = /^最近(?: (\S+))?(?: (\S+))?$/u.exec(text);
@@ -153,7 +164,7 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   // 今天／昨天 are also valid create prefixes (for example
   // 「昨天 牛肉麵 150」), so only their fully matched query forms above are
   // commands. Other reserved verbs must never fall through to create.
-  if (/^(?:查|最近|找|搜尋|排行|分類排行|目前模式|切換共同模式|切換個人模式|共同模式|個人模式|切換|今日|週報|這週|本週|上週|本月|月報|上月|改|加|移除|取消|還原|說明|幫助|help|分類|標籤|新增分類|刪除分類)(?:\s|$)/iu.test(text) || /^(?:(?:共同|個人|全部)\s*)?(?:\d{4}年)?\d{1,2}月(?:共同|個人|全部)?月報/u.test(text)) {
+  if (/^(?:查|最近|找|搜尋|排行|分類排行|目前模式|切換共同模式|切換個人模式|共同模式|個人模式|我的暱稱|目前暱稱|設定暱稱|修改暱稱|切換|今日|週報|這週|本週|上週|本月|月報|上月|改|加|移除|取消|還原|說明|幫助|help|分類|標籤|新增分類|刪除分類)(?:\s|$)/iu.test(text) || /^(?:(?:共同|個人|全部)\s*)?(?:\d{4}年)?\d{1,2}月(?:共同|個人|全部)?月報/u.test(text)) {
     if (/^(?:新增分類|刪除分類)(?:\s|$)/u.test(text)) {
       return invalid("目前分類是固定清單，不支援新增或刪除分類。");
     }

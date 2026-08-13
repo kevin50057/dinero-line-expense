@@ -536,11 +536,12 @@ describeWithPostgres("processNextInboundEvent integration", () => {
               count(*)::text AS count FROM member WHERE ledger_id=$1 AND is_active`,
       [pairingLedgerId],
     );
-    expect(paired.rows[0]).toEqual({ display_name: "另一半", count: "2" });
+    expect(paired.rows[0]).toEqual({ display_name: "新成員", count: "2" });
     const reply = await pool.query<{ text: string }>(
       "SELECT payload_json->'messages'->0->>'text' AS text FROM outbox_message WHERE source_webhook_event_id='E-pair-member'",
     );
     expect(reply.rows[0]?.text).toContain("配對成功");
+    expect(reply.rows[0]?.text).toContain("設定暱稱");
   });
 
   it("journals an unsend before purging the matching expense", async () => {
@@ -613,7 +614,28 @@ describeWithPostgres("processNextInboundEvent integration", () => {
       );
       expect(reply.rows[0]?.alt_text).toContain(expected);
       expect(JSON.stringify(reply.rows[0]?.payload)).toContain("月報");
+      if (text.includes("共同")) expect(reply.rows[0]?.alt_text).toContain("共同記帳人：小明 300 元");
     }
+  });
+
+  it("lets each member set a unique nickname used by later cards and reports", async () => {
+    await insertTextEvent("E-nickname", "M-nickname", "設定暱稱 阿明");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
+    const member = await pool.query<{ display_name: string; command_alias: string }>(
+      "SELECT display_name,command_alias FROM member WHERE ledger_id=$1 AND line_user_id='U-ming'",
+      [ledgerId],
+    );
+    expect(member.rows[0]).toEqual({ display_name: "阿明", command_alias: "阿明" });
+
+    await insertTextEvent("E-nickname-current", "M-nickname-current", "我的暱稱");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
+    const reply = await pool.query<{ alt_text: string }>(
+      "SELECT payload_json->'messages'->0->>'altText' AS alt_text FROM outbox_message WHERE source_webhook_event_id='E-nickname-current'",
+    );
+    expect(reply.rows[0]?.alt_text).toContain("阿明");
+
+    await insertTextEvent("E-nickname-reset", "M-nickname-reset", "設定暱稱 小明");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
   });
 
   async function insertTextEvent(

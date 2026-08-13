@@ -86,6 +86,7 @@ export async function processLedgerCommand(
         "記帳：牛肉麵 150 #工作（初始為個人模式）",
         "個人：個人 咖啡 80",
         "模式：切換共同模式、切換個人模式、目前模式",
+        "暱稱：設定暱稱 小美、我的暱稱",
         "查詢：最近、今天、週報、共同月報、7月月報、找 關鍵字、分類排行",
         "修改：最近 5 → 點每筆右側的編輯",
         "標籤：改 #編號 標籤 #約會 #台南",
@@ -126,6 +127,8 @@ export async function processLedgerCommand(
       return queryRanking(client, actor, event, command.filter);
     case "mode":
       return changeLedgerMode(client, actor, command.scope);
+    case "nickname":
+      return changeNickname(client, actor, command.value);
     case "void":
     case "restore":
       return withRefreshedDetail(client, actor, await changeStatus(client, actor, event, command.publicId, command.kind));
@@ -134,6 +137,46 @@ export async function processLedgerCommand(
     case "update":
       return withRefreshedDetail(client, actor, await updateExpense(client, actor, event, command.publicId, command.change));
   }
+}
+
+async function changeNickname(
+  client: PoolClient,
+  actor: CommandActor,
+  nickname: string | null,
+): Promise<LedgerCommandResult> {
+  if (nickname === null) {
+    return applied(`你目前的暱稱是「${actor.displayName}」。`, undefined, infoCard({
+      altText: `你目前的暱稱是「${actor.displayName}」。`,
+      kicker: "DINERO 帳本身份",
+      title: actor.displayName,
+      note: "要修改請輸入：設定暱稱 新名字",
+    }));
+  }
+  if (nickname.normalize("NFKC").trim().toLocaleLowerCase("zh-TW") ===
+      actor.displayName.normalize("NFKC").trim().toLocaleLowerCase("zh-TW")) {
+    return { outcome: "noop", reply: `你的暱稱已經是「${actor.displayName}」。` };
+  }
+  const duplicate = await client.query(
+    `SELECT 1 FROM member
+      WHERE ledger_id=$1 AND is_active AND id<>$2
+        AND (lower(btrim(display_name))=lower(btrim($3))
+          OR lower(btrim(command_alias))=lower(btrim($3)))`,
+    [actor.ledgerId, actor.memberId, nickname],
+  );
+  if (duplicate.rowCount !== 0) return rejected("這個暱稱已被另一位成員使用，請換一個。");
+  const updated = await client.query(
+    `UPDATE member SET display_name=$3,command_alias=$3,updated_at=clock_timestamp()
+      WHERE ledger_id=$1 AND id=$2 AND is_active`,
+    [actor.ledgerId, actor.memberId, nickname],
+  );
+  if (updated.rowCount !== 1) throw new Error("member_nickname_update_failed");
+  const reply = `暱稱已從「${actor.displayName}」改成「${nickname}」。之後的記帳卡片與報表都會使用新暱稱。`;
+  return applied(reply, undefined, infoCard({
+    altText: reply,
+    kicker: "DINERO 暱稱已更新",
+    title: nickname,
+    note: "你過去的交易也會顯示這個新暱稱。",
+  }));
 }
 
 async function queryCategoryRules(client: PoolClient, actor: CommandActor): Promise<LedgerCommandResult> {
@@ -357,11 +400,17 @@ async function queryPeriod(
 
   const scopeTotals = await periodScopeTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
   const memberTotals = await periodMemberTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
+  const sharedCreatorTotals = await periodSharedCreatorTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
   const categoryTotals = await periodCategoryTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
+  const showShared = command.filter.kind !== "personal";
+  const showPersonal = command.filter.kind !== "shared";
   const reply = [
     `${title}${suffix}：${rows.rows.length} 筆，合計 ${money(sumRows(rows.rows))}`,
-    `共同：${money(scopeTotals.shared)}`,
-    ...memberTotals.map((row) => `${row.name}個人：${money(row.total)}`),
+    ...(showShared ? [`共同：${money(scopeTotals.shared)}`] : []),
+    ...(showShared && sharedCreatorTotals.length > 0
+      ? [`共同記帳人：${sharedCreatorTotals.map((row) => `${row.name} ${money(row.total)}`).join("・")}`]
+      : []),
+    ...(showPersonal ? memberTotals.map((row) => `${row.name}個人：${money(row.total)}`) : []),
     `分類：${categoryTotals.length === 0 ? "無" : categoryTotals.map((row) => `${row.name} ${money(row.total)}`).join("・")}`,
     ...(isMonthPeriod(command.period) ? [] : rows.rows.map(formatListRow)),
   ].join("\n");
@@ -372,8 +421,12 @@ async function queryPeriod(
     summary: money(sumRows(rows.rows)),
     rows: [
       { label: "筆數", value: `${rows.rows.length} 筆` },
-      { label: "共同支出", value: money(scopeTotals.shared) },
-      ...memberTotals.map((row) => ({ label: `${row.name}的個人支出`, value: money(row.total) })),
+      ...(showShared ? [{ label: "共同支出", value: money(scopeTotals.shared) }] : []),
+      ...(showShared && sharedCreatorTotals.length > 0 ? [{
+        label: "共同支出・依記帳人",
+        value: sharedCreatorTotals.map((row) => `${row.name} ${money(row.total)}`).join("・"),
+      }] : []),
+      ...(showPersonal ? memberTotals.map((row) => ({ label: `${row.name}的個人支出`, value: money(row.total) })) : []),
       { label: "分類分布", value: categoryTotals.length === 0 ? "無" : categoryTotals.map((row) => `${row.name} ${money(row.total)}`).join("・") },
     ],
     ...(rows.rows.length > 10 ? { note: `另有 ${rows.rows.length - 10} 筆未在卡片逐筆顯示，可用期間篩選或「最近 20」查看。` } : {}),
@@ -499,6 +552,20 @@ async function periodMemberTotals(client: PoolClient, ledgerId: string, start: s
         AND et.occurred_on >= $2::date AND et.occurred_on < $3::date${filterSql}
       WHERE m.ledger_id=$1 AND m.is_active
       GROUP BY m.id, m.display_name ORDER BY m.created_at, m.id`,
+    [ledgerId, start, end, ...extra],
+  );
+  return result.rows;
+}
+
+async function periodSharedCreatorTotals(client: PoolClient, ledgerId: string, start: string, end: string, filterSql: string, extra: readonly unknown[]) {
+  const result = await client.query<{ name: string; total: string }>(
+    `SELECT m.display_name AS name, sum(et.amount_minor)::text AS total
+       FROM expense_transaction et
+       JOIN member m ON m.ledger_id=et.ledger_id AND m.id=et.created_by_member_id
+      WHERE et.ledger_id=$1 AND et.status='active' AND et.scope='shared'
+        AND et.occurred_on >= $2::date AND et.occurred_on < $3::date${filterSql}
+      GROUP BY m.id,m.display_name,m.created_at
+      ORDER BY sum(et.amount_minor) DESC,m.created_at,m.id`,
     [ledgerId, start, end, ...extra],
   );
   return result.rows;

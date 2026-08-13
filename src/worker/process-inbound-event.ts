@@ -456,8 +456,8 @@ async function pairLedgerMember(
     return processedResult(event, "rejected");
   }
   const inserted = await client.query(
-    `INSERT INTO member (ledger_id,line_user_id,display_name)
-     VALUES ($1,$2,'另一半')
+    `INSERT INTO member (ledger_id,line_user_id,display_name,command_alias)
+     VALUES ($1,$2,'新成員',NULL)
      ON CONFLICT (ledger_id,line_user_id) DO NOTHING`,
     [event.ledger_id, lineUserId],
   );
@@ -469,7 +469,7 @@ async function pairLedgerMember(
   }
   await enqueueReply(client, event, destination, replyTokenCiphertext,
     "member_pairing_result",
-    "配對成功！你現在可以直接輸入「牛肉麵 150」，或傳送「說明」查看所有指令。你的暫時名稱是「另一半」。");
+    "配對成功！請先輸入「設定暱稱 你的名字」，例如「設定暱稱 小美」。之後就可以直接輸入「牛肉麵 150」記帳。");
   await finish(client, event, "applied");
   return processedResult(event, "applied");
 }

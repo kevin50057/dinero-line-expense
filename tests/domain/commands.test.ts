@@ -32,6 +32,9 @@ describe("parseLedgerCommand", () => {
     ["切換共同模式", { kind: "mode", scope: "shared" }],
     ["切換個人模式", { kind: "mode", scope: "personal" }],
     ["共同模式", { kind: "mode", scope: "shared" }],
+    ["我的暱稱", { kind: "nickname", value: null }],
+    ["設定暱稱 小美", { kind: "nickname", value: "小美" }],
+    ["修改暱稱 Mei Lin", { kind: "nickname", value: "Mei Lin" }],
     ["幫助", { kind: "help" }],
     ["取消 #K7M2Q9TX", { kind: "void", publicId: "K7M2Q9TX" }],
     ["還原 #K7M2Q9TX", { kind: "restore", publicId: "K7M2Q9TX" }],
@@ -46,7 +49,7 @@ describe("parseLedgerCommand", () => {
     expect(parseLedgerCommand(input)).toEqual({ kind: "command", command: expected });
   });
 
-  it.each(["最近 0", "最近 21", "最近 五", "找", "搜尋 ", "切換 共同模式", "改 #K7M2Q9TX 金額 -1", "本月 不知道", "13月月報", "取消 150"])(
+  it.each(["最近 0", "最近 21", "最近 五", "找", "搜尋 ", "設定暱稱", "設定暱稱 #小美", "切換 共同模式", "改 #K7M2Q9TX 金額 -1", "本月 不知道", "13月月報", "取消 150"])(
     "keeps malformed reserved input out of create: %s",
     (input) => expect(parseLedgerCommand(input).kind).toBe("invalid"),
   );
