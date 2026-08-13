@@ -94,10 +94,11 @@ function parseFlexComponent(value: unknown, depth: number, state: { components: 
   countComponent(depth, state);
   if (!isPlainRecord(value) || typeof value["type"] !== "string") fail();
   if (value["type"] === "box") {
-    if (!hasAllowedKeys(value, ["type", "layout", "contents", "spacing", "margin", "paddingAll", "backgroundColor", "cornerRadius"])) fail();
+    if (!hasAllowedKeys(value, ["type", "layout", "contents", "spacing", "margin", "paddingAll", "backgroundColor", "cornerRadius", "flex"])) fail();
     if (!isOneOf(value["layout"], ["vertical", "horizontal", "baseline"]) || !Array.isArray(value["contents"]) || value["contents"].length > 40) fail();
     const result: Record<string, unknown> = { type: "box", layout: value["layout"], contents: value["contents"].map((item) => parseFlexComponent(item, depth + 1, state)) };
     copyOptionalStrings(value, result, ["spacing", "margin", "paddingAll", "backgroundColor", "cornerRadius"]);
+    copyOptionalFlex(value, result);
     return result;
   }
   if (value["type"] === "text") {
@@ -119,13 +120,26 @@ function parseFlexComponent(value: unknown, depth: number, state: { components: 
     return result;
   }
   if (value["type"] === "button") {
-    if (!hasAllowedKeys(value, ["type", "style", "color", "height", "margin", "action"]) || !isPlainRecord(value["action"])) fail();
+    if (!hasAllowedKeys(value, ["type", "style", "color", "height", "margin", "flex", "action"]) || !isPlainRecord(value["action"])) fail();
     if (value["style"] !== undefined && !isOneOf(value["style"], ["link", "primary", "secondary"])) fail();
     if (value["height"] !== undefined && !isOneOf(value["height"], ["sm", "md"])) fail();
     const action = value["action"];
-    if (!hasExactKeys(action, ["type", "label", "text"]) || action["type"] !== "message" || !validText(action["label"], 1, 40) || !validText(action["text"], 1, 300)) fail();
-    const result: Record<string, unknown> = { type: "button", action: { type: "message", label: action["label"], text: action["text"] } };
+    let parsedAction: Record<string, unknown>;
+    if (action["type"] === "message") {
+      if (!hasExactKeys(action, ["type", "label", "text"]) || !validText(action["label"], 1, 40) || !validText(action["text"], 1, 300)) fail();
+      parsedAction = { type: "message", label: action["label"], text: action["text"] };
+    } else if (action["type"] === "postback") {
+      if (!hasExactKeys(action, ["type", "label", "data", "inputOption", "fillInText"]) ||
+          !validText(action["label"], 1, 40) || !validText(action["data"], 1, 300) ||
+          action["inputOption"] !== "openKeyboard" || !validText(action["fillInText"], 1, 300)) fail();
+      parsedAction = {
+        type: "postback", label: action["label"], data: action["data"],
+        inputOption: "openKeyboard", fillInText: action["fillInText"],
+      };
+    } else fail();
+    const result: Record<string, unknown> = { type: "button", action: parsedAction };
     copyOptionalStrings(value, result, ["style", "color", "height", "margin"]);
+    copyOptionalFlex(value, result);
     return result;
   }
   fail();
@@ -137,6 +151,12 @@ function copyOptionalStrings(source: Readonly<Record<string, unknown>>, target: 
     if (!validText(source[key], 1, 50)) fail();
     target[key] = source[key];
   }
+}
+
+function copyOptionalFlex(source: Readonly<Record<string, unknown>>, target: Record<string, unknown>) {
+  if (source["flex"] === undefined) return;
+  if (!Number.isInteger(source["flex"]) || Number(source["flex"]) < 0 || Number(source["flex"]) > 10) fail();
+  target["flex"] = source["flex"];
 }
 
 function countComponent(depth: number, state: { components: number }) {

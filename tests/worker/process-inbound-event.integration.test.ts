@@ -154,11 +154,13 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
     const after = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM expense_transaction");
     expect(after.rows[0]?.count).toBe(before.rows[0]?.count);
-    const reply = await pool.query<{ payload: { messages: Array<{ type: string; altText: string }> } }>(
+    const reply = await pool.query<{ payload: { messages: Array<{ type: string; altText: string; contents: unknown }> } }>(
       `SELECT payload_json AS payload FROM outbox_message WHERE source_webhook_event_id='E-recent'`,
     );
     expect(reply.rows[0]?.payload.messages[0]).toMatchObject({ type: "flex" });
     expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("小明個人最近 2 筆");
+    expect(JSON.stringify(reply.rows[0]?.payload.messages[0]?.contents)).toContain('"label":"編輯"');
+    expect(JSON.stringify(reply.rows[0]?.payload.messages[0]?.contents)).toContain('"text":"查 #K7M2Q9TX"');
   });
 
   it("updates an owned personal expense and records exactly one before/after audit", async () => {
@@ -174,6 +176,29 @@ describeWithPostgres("processNextInboundEvent integration", () => {
         WHERE source_webhook_event_id='E-update'`,
     );
     expect(audit.rows[0]).toMatchObject({ event_type: "updated", before_data: { amountMinor: 150 }, after_data: { amountMinor: 180 } });
+    const card = await pool.query<{ contents: unknown }>(
+      `SELECT payload_json->'messages'->0->'contents' AS contents FROM outbox_message
+        WHERE source_webhook_event_id='E-update'`,
+    );
+    expect(JSON.stringify(card.rows[0]?.contents)).toContain('"fillInText":"改 #K7M2Q9TX 金額 180"');
+  });
+
+  it("replaces explicit custom tags and returns the refreshed edit card", async () => {
+    await insertTextEvent("E-tags-replace", "M-tags-replace", "改 #K7M2Q9TX 標籤 #公司 #午休");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied", publicId: "K7M2Q9TX" });
+    const state = await pool.query<{ tags: string[]; contents: unknown }>(
+      `SELECT ARRAY(
+          SELECT t.normalized_name FROM expense_transaction et
+          JOIN transaction_tag tt ON tt.transaction_id=et.id AND tt.ledger_id=et.ledger_id
+          JOIN tag t ON t.id=tt.tag_id AND t.ledger_id=tt.ledger_id
+          WHERE et.public_id='K7M2Q9TX' AND tt.tag_type='custom' AND tt.source='explicit'
+          ORDER BY t.normalized_name
+        ) AS tags,
+        (SELECT payload_json->'messages'->0->'contents' FROM outbox_message
+          WHERE source_webhook_event_id='E-tags-replace') AS contents`,
+    );
+    expect(state.rows[0]?.tags).toEqual(["公司", "午休"]);
+    expect(JSON.stringify(state.rows[0]?.contents)).toContain('"fillInText":"改 #K7M2Q9TX 標籤 #公司 #午休"');
   });
 
   it("rejects another member mutating a personal expense without an audit", async () => {

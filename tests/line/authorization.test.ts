@@ -29,7 +29,7 @@ function event(
 }
 
 describe("authorizeLineEvent", () => {
-  it.each(["message", "edit"] as const)(
+  it.each(["message", "edit", "postback"] as const)(
     "requires an allowed member for an allowed-group %s event",
     (kind) => {
       expect(
@@ -79,6 +79,7 @@ describe("authorizeLineEvent", () => {
     for (const kind of [
       "message",
       "edit",
+      "postback",
       "join",
       "unsend",
       "other",

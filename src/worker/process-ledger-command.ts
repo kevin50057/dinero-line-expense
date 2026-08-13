@@ -84,8 +84,8 @@ export async function processLedgerCommand(
         "個人：個人 咖啡 80",
         "模式：切換共同模式、切換個人模式、目前模式",
         "查詢：最近、今天、週報、本月、找 關鍵字、分類排行",
-        "修改：改 #編號 金額 180",
-        "標籤：加 #編號 標籤 #約會",
+        "修改：最近 5 → 點每筆右側的編輯",
+        "標籤：改 #編號 標籤 #約會 #台南",
         "取消／還原：取消 #編號、還原 #編號",
       ].join("\n");
       return applied(reply, undefined, helpCards(reply));
@@ -104,6 +104,7 @@ export async function processLedgerCommand(
         return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 自訂整理", title: "用標籤留下情境", rows: [
           { label: "新增時", value: "牛肉麵 150 #約會 #台北" },
           { label: "事後加入", value: "加 #編號 標籤 #約會" },
+          { label: "整組修改", value: "改 #編號 標籤 #約會 #台北；輸入無可清空" },
           { label: "依標籤查詢", value: "本月 #約會" },
           { label: "自動情境", value: "孝親費、爸媽紅包等 → 原生家庭" },
         ], note: "每筆最多 10 個自訂標籤。", actions: [{ label: "看分類", text: "分類" }] }));
@@ -122,11 +123,11 @@ export async function processLedgerCommand(
       return changeLedgerMode(client, actor, command.scope);
     case "void":
     case "restore":
-      return changeStatus(client, actor, event, command.publicId, command.kind);
+      return withRefreshedDetail(client, actor, await changeStatus(client, actor, event, command.publicId, command.kind));
     case "tags":
-      return changeCustomTags(client, actor, event, command.publicId, command.operation, command.tags);
+      return withRefreshedDetail(client, actor, await changeCustomTags(client, actor, event, command.publicId, command.operation, command.tags));
     case "update":
-      return updateExpense(client, actor, event, command.publicId, command.change);
+      return withRefreshedDetail(client, actor, await updateExpense(client, actor, event, command.publicId, command.change));
   }
 }
 
@@ -182,6 +183,7 @@ async function queryDetail(client: PoolClient, actor: CommandActor, publicId: st
   const expense = await loadExpense(client, actor.ledgerId, publicId, false);
   if (expense === null) return notFound();
   const tags = await loadTagNames(client, actor.ledgerId, expense.id);
+  const editableTags = await loadExplicitCustomTags(client, actor.ledgerId, expense.id);
   const occurred = expense.occurred_at === null
     ? `${slashDate(expense.occurred_on)}（時間未指定）`
     : `${slashDate(expense.occurred_on)} ${toZonedMinute(expense.occurred_at, actor.timezone)?.time ?? "--:--"}`;
@@ -193,6 +195,17 @@ async function queryDetail(client: PoolClient, actor: CommandActor, publicId: st
     `付款：${expense.payer_name}`,
     ...(expense.owner_name === null ? [] : [`所有人：${expense.owner_name}`]),
   ].join("\n");
+  const canMutate = expense.scope === "shared" || expense.personal_owner_member_id === actor.memberId;
+  const editActions = expense.status === "active" && canMutate
+    ? [
+        { label: "改名稱", data: `ui=edit_name&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 項目 ${expense.description}` },
+        { label: "改金額", data: `ui=edit_amount&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 金額 ${expense.amount_minor}` },
+        { label: "改標籤", data: `ui=edit_tags&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 標籤 ${editableTags.length === 0 ? "#" : editableTags.map((name) => `#${name}`).join(" ")}` },
+        { label: "取消這筆", text: `取消 #${expense.public_id}` },
+      ]
+    : expense.status === "voided" && canMutate
+      ? [{ label: "還原這筆", text: `還原 #${expense.public_id}` }]
+      : [];
   return applied(reply, publicId, infoCard({
     altText: reply,
     kicker: `交易 #${expense.public_id}`,
@@ -204,9 +217,7 @@ async function queryDetail(client: PoolClient, actor: CommandActor, publicId: st
       { label: "消費時間", value: occurred },
       { label: "付款人", value: expense.payer_name, ...(expense.owner_name === null ? {} : { meta: `所有人：${expense.owner_name}` }) },
     ],
-    actions: expense.status === "active"
-      ? [{ label: "取消這筆", text: `取消 #${expense.public_id}` }]
-      : [{ label: "還原這筆", text: `還原 #${expense.public_id}` }],
+    actions: editActions,
   }));
 }
 
@@ -520,6 +531,7 @@ async function updateExpense(
     await insertAudit(client, actor, event, expense.id, "updated", ["amountMinor"], { amountMinor: Number(expense.amount_minor) }, { amountMinor: change.value });
     return applied(`已修改 #${publicId}\n金額：${money(expense.amount_minor)} → ${money(change.value)}`, publicId);
   }
+  if (change.field === "tags") return replaceExplicitCustomTags(client, actor, event, expense, change.value);
   if (change.field === "description") return updateDescription(client, actor, event, expense, change.value);
   if (change.field === "category") return updateCategory(client, actor, event, expense, change.value);
   if (change.field === "meal") return updateMeal(client, actor, event, expense, change.value);
@@ -686,6 +698,49 @@ async function loadCustomTags(client: PoolClient, ledgerId: string, transactionI
   return result.rows.map((row) => row.name);
 }
 
+async function loadExplicitCustomTags(client: PoolClient, ledgerId: string, transactionId: string): Promise<string[]> {
+  const result = await client.query<{ name: string }>(
+    `SELECT t.normalized_name AS name FROM transaction_tag tt JOIN tag t ON t.ledger_id=tt.ledger_id AND t.id=tt.tag_id
+      WHERE tt.ledger_id=$1 AND tt.transaction_id=$2 AND tt.tag_type='custom' AND tt.source='explicit'
+      ORDER BY t.normalized_name`,
+    [ledgerId, transactionId],
+  );
+  return result.rows.map((row) => row.name);
+}
+
+async function replaceExplicitCustomTags(
+  client: PoolClient,
+  actor: CommandActor,
+  event: CommandEvent,
+  expense: ExpenseRow,
+  names: readonly string[],
+): Promise<LedgerCommandResult> {
+  const current = await loadExplicitCustomTags(client, actor.ledgerId, expense.id);
+  const before = [...current].sort();
+  const after = [...new Set(names)].sort();
+  if (before.length === after.length && before.every((name, index) => name === after[index])) {
+    return noop("標籤沒有變更。", expense.public_id);
+  }
+  await client.query(
+    "DELETE FROM transaction_tag WHERE ledger_id=$1 AND transaction_id=$2 AND tag_type='custom' AND source='explicit'",
+    [actor.ledgerId, expense.id],
+  );
+  for (const name of after) {
+    const tagId = await upsertCustomTag(client, actor.ledgerId, name);
+    await client.query(
+      `INSERT INTO transaction_tag (ledger_id,transaction_id,tag_id,tag_type,source,rule_key,rule_version,assigned_by_member_id)
+       VALUES ($1,$2,$3,'custom','explicit','manual:replace_tags','1',$4)`,
+      [actor.ledgerId, expense.id, tagId, actor.memberId],
+    );
+  }
+  await bumpVersion(client, actor.ledgerId, expense.id);
+  await insertAudit(client, actor, event, expense.id, "updated", ["customTags"], { customTags: before }, { customTags: after });
+  return applied(
+    `已修改 #${expense.public_id}\n標籤：${after.length === 0 ? "無" : after.map((name) => `#${name}`).join(" ")}`,
+    expense.public_id,
+  );
+}
+
 async function replaceSystemTag(client: PoolClient, actor: CommandActor, transactionId: string, type: "category" | "meal", code: string, source: "explicit" | "inferred", ruleKey: string) {
   await client.query("DELETE FROM transaction_tag WHERE ledger_id=$1 AND transaction_id=$2 AND tag_type=$3", [actor.ledgerId, transactionId, type]);
   await insertSystemTag(client, actor, transactionId, type, code, source, ruleKey);
@@ -792,10 +847,21 @@ function listCard(title: string, rows: readonly ListRow[], altText: string, note
       label: `${slashDate(row.occurred_on)}・${row.scope === "shared" ? "共同" : "個人"}`,
       value: `${row.description}　${money(row.amount_minor)}`,
       meta: `#${row.public_id}`,
+      action: { label: "編輯", text: `查 #${row.public_id}` },
     })),
     note: rows.length > visible.length ? `${note}；卡片顯示前 ${visible.length} 筆，共 ${rows.length} 筆。` : note,
     actions,
   });
+}
+
+async function withRefreshedDetail(
+  client: PoolClient,
+  actor: CommandActor,
+  result: LedgerCommandResult,
+): Promise<LedgerCommandResult> {
+  if (result.outcome !== "applied" || result.publicId === undefined) return result;
+  const detail = await queryDetail(client, actor, result.publicId);
+  return detail.message === undefined ? result : { ...result, message: detail.message };
 }
 
 function statusSnapshot(expense: ExpenseRow) { return { status: expense.status, voidReason: expense.status === "voided" ? "user_cancel" : null }; }

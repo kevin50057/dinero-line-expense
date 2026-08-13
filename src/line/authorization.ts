@@ -53,7 +53,7 @@ export function authorizeLineEvent(
     return { authorized: false, reason: "group_not_allowed" };
   }
 
-  if (event.kind === "message" || event.kind === "edit") {
+  if (event.kind === "message" || event.kind === "edit" || event.kind === "postback") {
     const { userId } = event.source;
     if (userId === undefined) {
       return { authorized: false, reason: "member_user_id_missing" };

@@ -136,6 +136,24 @@ describe("parseLineWebhookBody", () => {
     expect(result.events[0]?.rawType).toBe("memberJoined");
   });
 
+  it("normalizes a postback event used by keyboard-prefill card actions", () => {
+    const result = parseLineWebhookBody(encode({
+      destination: "U-bot",
+      events: [baseEvent({
+        type: "postback",
+        webhookEventId: "01POSTBACK",
+        message: undefined,
+        postback: { data: "ui=edit_amount" },
+      })],
+    }));
+
+    expect(result.events[0]).toMatchObject({
+      kind: "postback",
+      rawType: "postback",
+      source: { groupId: "C-allowed", userId: "U-ming" },
+    });
+  });
+
   it("normalizes non-text messages without inventing text", () => {
     const result = parseLineWebhookBody(
       encode({

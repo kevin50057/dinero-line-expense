@@ -1,6 +1,7 @@
 export type NormalizedLineEventKind =
   | "message"
   | "edit"
+  | "postback"
   | "unsend"
   | "join"
   | "other";
@@ -70,6 +71,8 @@ function normalizeKind(type: string): NormalizedLineEventKind {
       return "message";
     case "messageEdited":
       return "edit";
+    case "postback":
+      return "postback";
     case "unsend":
       return "unsend";
     case "join":

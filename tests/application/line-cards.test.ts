@@ -26,4 +26,27 @@ describe("LINE Flex card builders", () => {
     });
     expect(parseLineReplyPayload({ messages: [card] })).toEqual({ messages: [card] });
   });
+
+  it("builds list-row and keyboard-prefill edit actions", () => {
+    const card = infoCard({
+      altText: "最近 1 筆",
+      title: "最近紀錄",
+      rows: [{
+        label: "2026/08/13・個人",
+        value: "牛肉麵　150 元",
+        meta: "#K7M2Q9TX",
+        action: { label: "編輯", text: "查 #K7M2Q9TX" },
+      }],
+      actions: [{
+        label: "改金額",
+        data: "ui=edit_amount&id=K7M2Q9TX",
+        fillInText: "改 #K7M2Q9TX 金額 150",
+      }],
+    });
+    const parsed = parseLineReplyPayload({ messages: [card] });
+    expect(JSON.stringify(parsed)).toContain('"label":"編輯"');
+    expect(JSON.stringify(parsed)).toContain('"type":"postback"');
+    expect(JSON.stringify(parsed)).toContain('"inputOption":"openKeyboard"');
+    expect(JSON.stringify(parsed)).toContain('"fillInText":"改 #K7M2Q9TX 金額 150"');
+  });
 });

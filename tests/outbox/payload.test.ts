@@ -69,11 +69,26 @@ describe("parseLineReplyPayload", () => {
     expect(parseLineReplyPayload(input)).toEqual(input);
   });
 
+  it("accepts only the keyboard-prefill postback subset", () => {
+    const action = {
+      type: "postback", label: "改金額", data: "ui=edit_amount&id=K7M2Q9TX",
+      inputOption: "openKeyboard", fillInText: "改 #K7M2Q9TX 金額 150",
+    };
+    const input = { messages: [{
+      type: "flex", altText: "編輯交易",
+      contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [
+        { type: "button", style: "primary", flex: 1, action },
+      ] } },
+    }] };
+    expect(parseLineReplyPayload(input)).toEqual(input);
+  });
+
   it.each([
     { messages: [{ type: "flex", altText: "", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [] } } }] },
     { messages: [{ type: "flex", altText: "ok", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [], secret: "no" } } }] },
     { messages: [{ type: "flex", altText: "ok", contents: { type: "carousel", contents: [] } }] },
     { messages: [{ type: "flex", altText: "ok", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [{ type: "button", action: { type: "uri", label: "no", uri: "https://example.com" } }] } } }] },
+    { messages: [{ type: "flex", altText: "ok", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [{ type: "button", action: { type: "postback", label: "no", data: "x", inputOption: "openRichMenu", fillInText: "x" } }] } } }] },
   ])("rejects expanded or malformed Flex payloads: %j", (input) => {
     expect(() => parseLineReplyPayload(input)).toThrow(InvalidLineReplyPayloadError);
   });

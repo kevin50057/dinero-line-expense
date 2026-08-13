@@ -67,7 +67,7 @@ interface InboxInsert {
   payload: AuthorizedPayload | null;
   status: "pending" | "succeeded";
   processedAt: Date | null;
-  outcomeCode: "unauthorized" | null;
+  outcomeCode: "unauthorized" | "noop" | null;
 }
 
 /**
@@ -159,7 +159,8 @@ export class PostgresLineEventInbox implements LineEventInbox {
     const pairingRequest = !authorization.authorized && authorization.reason === "member_not_allowed"
       && isPairingRequest(event);
     const unauthorized = !authorization.authorized && !databaseMember && !pairingRequest;
-    const payload = unauthorized
+    const passivePostback = event.kind === "postback";
+    const payload = unauthorized || passivePostback
       ? null
       : await this.#authorizedTextPayload(destination, acceptedEvent);
 
@@ -170,9 +171,9 @@ export class PostgresLineEventInbox implements LineEventInbox {
       lineMessageId: event.lineMessageId ?? null,
       lineEventAt,
       payload,
-      status: unauthorized ? "succeeded" : "pending",
-      processedAt: unauthorized ? new Date() : null,
-      outcomeCode: unauthorized ? "unauthorized" : null,
+      status: unauthorized || passivePostback ? "succeeded" : "pending",
+      processedAt: unauthorized || passivePostback ? new Date() : null,
+      outcomeCode: unauthorized ? "unauthorized" : passivePostback ? "noop" : null,
     };
   }
 

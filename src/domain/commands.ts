@@ -25,6 +25,7 @@ export type CommandFilter =
 export type UpdateChange =
   | { readonly field: "description"; readonly value: string }
   | { readonly field: "amount"; readonly value: number }
+  | { readonly field: "tags"; readonly value: readonly string[] }
   | { readonly field: "category"; readonly value: CategoryCode | "auto" }
   | { readonly field: "meal"; readonly value: MealCode | "auto" | "none" }
   | { readonly field: "scope"; readonly value: "shared" | "personal" }
@@ -114,7 +115,7 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
     return command({ kind: "tags", operation: match[1] === "加" ? "add" : "remove", publicId: match[2]!.toUpperCase(), tags });
   }
 
-  match = new RegExp(`^改 #${PUBLIC_ID} (項目|金額|分類|餐別|範圍|付款人|所有人|日期|時間)(?: (.*))?$`, "iu").exec(text);
+  match = new RegExp(`^改 #${PUBLIC_ID} (項目|金額|標籤|分類|餐別|範圍|付款人|所有人|日期|時間)(?: (.*))?$`, "iu").exec(text);
   if (match) {
     const change = parseChange(match[2]!, match[3]?.trim() ?? "");
     if (typeof change === "string") return invalid(change);
@@ -159,6 +160,12 @@ function parseChange(field: string, raw: string): UpdateChange | string {
   if (field === "金額") {
     if (!/^\d+$/u.test(raw) || Number(raw) <= 0 || !Number.isSafeInteger(Number(raw))) return "金額必須是大於 0 的整數。";
     return { field: "amount", value: Number(raw) };
+  }
+  if (field === "標籤") {
+    if (raw === "無") return { field: "tags", value: [] };
+    const tags = parseCustomTags(raw);
+    if (typeof tags === "string") return tags;
+    return { field: "tags", value: tags };
   }
   if (field === "分類") {
     if (raw === "自動") return { field: "category", value: "auto" };

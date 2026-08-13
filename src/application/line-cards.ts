@@ -11,12 +11,21 @@ export interface CardRow {
   readonly label: string;
   readonly value: string;
   readonly meta?: string;
+  readonly action?: CardAction;
 }
 
-export interface CardAction {
+export interface MessageCardAction {
   readonly label: string;
   readonly text: string;
 }
+
+export interface KeyboardCardAction {
+  readonly label: string;
+  readonly data: string;
+  readonly fillInText: string;
+}
+
+export type CardAction = MessageCardAction | KeyboardCardAction;
 
 export function infoCard(options: {
   readonly altText: string;
@@ -72,9 +81,9 @@ export function helpCards(altText: string): LineReplyFlexMessage {
         footer([{ label: "目前模式", text: "目前模式" }, { label: "本週報表", text: "週報" }]),
       ),
       bubble(
-        header("修改與管理", "每筆都有專屬編號"),
+        header("修改與管理", "最近列表直接點編輯"),
         body([
-          rowBox({ label: "看明細", value: "查 #K7M2Q9TX" }),
+          rowBox({ label: "卡片操作", value: "最近 5 → 編輯 → 改名稱／金額／標籤" }),
           separator("md"),
           rowBox({ label: "修改", value: "改 #K7M2Q9TX 金額 180" }),
           separator("md"),
@@ -122,32 +131,57 @@ function body(contents: readonly object[]) {
 
 function footer(actions: readonly CardAction[]) {
   if (actions.length === 0) return undefined;
+  const buttons = actions.slice(0, 4).map((action) => actionButton(action));
   return {
     type: "box",
-    layout: actions.length === 1 ? "vertical" : "horizontal",
+    layout: "vertical",
     paddingAll: "12px",
     backgroundColor: PAPER,
     spacing: "sm",
-    contents: actions.slice(0, 2).map((action) => ({
-      type: "button",
-      style: "primary",
-      height: "sm",
-      color: BRAND,
-      action: { type: "message", label: truncate(action.label, 40), text: truncate(action.text, 300) },
-    })),
+    contents: buttons.length <= 2
+      ? [{ type: "box", layout: "horizontal", spacing: "sm", contents: buttons }]
+      : [
+          { type: "box", layout: "horizontal", spacing: "sm", contents: buttons.slice(0, 2) },
+          { type: "box", layout: "horizontal", spacing: "sm", contents: buttons.slice(2, 4) },
+        ],
   };
 }
 
 function rowBox(row: CardRow) {
+  const details = [
+    text(row.label, { size: "xs", color: MUTED, weight: "bold", wrap: true }),
+    text(row.value, { size: "sm", color: INK, weight: "bold", wrap: true }),
+    ...(row.meta === undefined ? [] : [text(row.meta, { size: "xs", color: MUTED, wrap: true })]),
+  ];
   return {
     type: "box",
-    layout: "vertical",
+    layout: row.action === undefined ? "vertical" : "horizontal",
     spacing: "xs",
-    contents: [
-      text(row.label, { size: "xs", color: MUTED, weight: "bold", wrap: true }),
-      text(row.value, { size: "sm", color: INK, weight: "bold", wrap: true }),
-      ...(row.meta === undefined ? [] : [text(row.meta, { size: "xs", color: MUTED, wrap: true })]),
-    ],
+    contents: row.action === undefined
+      ? details
+      : [
+          { type: "box", layout: "vertical", spacing: "xs", flex: 4, contents: details },
+          actionButton(row.action, 1),
+        ],
+  };
+}
+
+function actionButton(action: CardAction, flexValue?: number) {
+  return {
+    type: "button",
+    style: "primary",
+    height: "sm",
+    color: BRAND,
+    ...(flexValue === undefined ? {} : { flex: flexValue }),
+    action: "text" in action
+      ? { type: "message", label: truncate(action.label, 40), text: truncate(action.text, 300) }
+      : {
+          type: "postback",
+          label: truncate(action.label, 40),
+          data: truncate(action.data, 300),
+          inputOption: "openKeyboard",
+          fillInText: truncate(action.fillInText, 300),
+        },
   };
 }
 
