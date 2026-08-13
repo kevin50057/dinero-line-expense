@@ -128,7 +128,7 @@ function footer(actions: readonly CardAction[]) {
     spacing: "sm",
     contents: actions.slice(0, 2).map((action) => ({
       type: "button",
-      style: "secondary",
+      style: "primary",
       height: "sm",
       color: BRAND,
       action: { type: "message", label: truncate(action.label, 40), text: truncate(action.text, 300) },

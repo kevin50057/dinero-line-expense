@@ -6,9 +6,12 @@ import { parseLineReplyPayload } from "../../src/outbox/index.js";
 describe("LINE Flex card builders", () => {
   it("builds help carousel accepted by the outbound allowlist", () => {
     const card = helpCards("記帳與查詢說明");
-    expect(parseLineReplyPayload({ messages: [card] })).toMatchObject({
+    const parsed = parseLineReplyPayload({ messages: [card] });
+    expect(parsed).toMatchObject({
       messages: [{ type: "flex", contents: { type: "carousel" } }],
     });
+    expect(JSON.stringify(parsed)).toContain('"style":"primary"');
+    expect(JSON.stringify(parsed)).not.toContain('"style":"secondary"');
   });
 
   it("builds a detail/report bubble accepted by the outbound allowlist", () => {
