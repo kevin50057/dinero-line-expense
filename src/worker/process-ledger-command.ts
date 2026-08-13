@@ -183,7 +183,6 @@ async function queryDetail(client: PoolClient, actor: CommandActor, publicId: st
   const expense = await loadExpense(client, actor.ledgerId, publicId, false);
   if (expense === null) return notFound();
   const tags = await loadTagNames(client, actor.ledgerId, expense.id);
-  const editableTags = await loadExplicitCustomTags(client, actor.ledgerId, expense.id);
   const occurred = expense.occurred_at === null
     ? `${slashDate(expense.occurred_on)}（時間未指定）`
     : `${slashDate(expense.occurred_on)} ${toZonedMinute(expense.occurred_at, actor.timezone)?.time ?? "--:--"}`;
@@ -200,7 +199,7 @@ async function queryDetail(client: PoolClient, actor: CommandActor, publicId: st
     ? [
         { label: "改名稱", data: `ui=edit_name&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 項目 ${expense.description}` },
         { label: "改金額", data: `ui=edit_amount&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 金額 ${expense.amount_minor}` },
-        { label: "改標籤", data: `ui=edit_tags&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 標籤 ${editableTags.length === 0 ? "#" : editableTags.map((name) => `#${name}`).join(" ")}` },
+        { label: "改標籤", data: `ui=edit_tags&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 標籤 ${tags.map((name) => `#${name}`).join(" ")}` },
         { label: "取消這筆", text: `取消 #${expense.public_id}` },
       ]
     : expense.status === "voided" && canMutate
@@ -717,26 +716,71 @@ async function replaceExplicitCustomTags(
 ): Promise<LedgerCommandResult> {
   const current = await loadExplicitCustomTags(client, actor.ledgerId, expense.id);
   const before = [...current].sort();
-  const after = [...new Set(names)].sort();
-  if (before.length === after.length && before.every((name, index) => name === after[index])) {
+  const categoryCodes = names.flatMap((name) => {
+    const entry = Object.entries(CATEGORY_DISPLAY_NAMES).find(([, displayName]) => displayName === name);
+    return entry === undefined ? [] : [entry[0] as CategoryCode];
+  });
+  const mealCodes = names.flatMap((name) => {
+    const entry = Object.entries(MEAL_DISPLAY_NAMES).find(([, displayName]) => displayName === name);
+    return entry === undefined ? [] : [entry[0] as MealCode];
+  });
+  if (new Set(categoryCodes).size > 1) return rejected("一次只能設定一個分類標籤。", expense.public_id);
+  if (new Set(mealCodes).size > 1) return rejected("一次只能設定一個餐別標籤。", expense.public_id);
+  const requestedCategory = categoryCodes[0] ?? null;
+  const requestedMeal = mealCodes[0] ?? null;
+  const effectiveCategory = requestedCategory ?? expense.category_code;
+  if (requestedMeal !== null && effectiveCategory !== "food") {
+    return rejected("早餐、午餐等餐別必須搭配 #食物。", expense.public_id);
+  }
+  const systemNames = new Set<string>([
+    ...Object.values(CATEGORY_DISPLAY_NAMES),
+    ...Object.values(MEAL_DISPLAY_NAMES),
+  ]);
+  const after = [...new Set(names.filter((name) => !systemNames.has(name)))].sort();
+  const customUnchanged = before.length === after.length && before.every((name, index) => name === after[index]);
+  const categoryUnchanged = requestedCategory === null ||
+    (expense.category_code === requestedCategory && expense.category_source === "explicit");
+  const mealUnchanged = requestedMeal === null ||
+    (expense.meal_code === requestedMeal && expense.meal_source === "explicit");
+  if (customUnchanged && categoryUnchanged && mealUnchanged) {
     return noop("標籤沒有變更。", expense.public_id);
   }
-  await client.query(
-    "DELETE FROM transaction_tag WHERE ledger_id=$1 AND transaction_id=$2 AND tag_type='custom' AND source='explicit'",
-    [actor.ledgerId, expense.id],
-  );
-  for (const name of after) {
-    const tagId = await upsertCustomTag(client, actor.ledgerId, name);
+  if (requestedCategory !== null && !categoryUnchanged) {
+    await replaceSystemTag(client, actor, expense.id, "category", requestedCategory, "explicit", "manual:card_tags");
+    if (requestedCategory !== "food") await deleteMealTag(client, actor.ledgerId, expense.id);
+  }
+  if (requestedMeal !== null && !mealUnchanged) {
+    await replaceSystemTag(client, actor, expense.id, "meal", requestedMeal, "explicit", "manual:card_tags");
+  }
+  if (!customUnchanged) {
     await client.query(
-      `INSERT INTO transaction_tag (ledger_id,transaction_id,tag_id,tag_type,source,rule_key,rule_version,assigned_by_member_id)
-       VALUES ($1,$2,$3,'custom','explicit','manual:replace_tags','1',$4)`,
-      [actor.ledgerId, expense.id, tagId, actor.memberId],
+      "DELETE FROM transaction_tag WHERE ledger_id=$1 AND transaction_id=$2 AND tag_type='custom' AND source='explicit'",
+      [actor.ledgerId, expense.id],
     );
+    for (const name of after) {
+      const tagId = await upsertCustomTag(client, actor.ledgerId, name);
+      await client.query(
+        `INSERT INTO transaction_tag (ledger_id,transaction_id,tag_id,tag_type,source,rule_key,rule_version,assigned_by_member_id)
+         VALUES ($1,$2,$3,'custom','explicit','manual:replace_tags','1',$4)`,
+        [actor.ledgerId, expense.id, tagId, actor.memberId],
+      );
+    }
   }
   await bumpVersion(client, actor.ledgerId, expense.id);
-  await insertAudit(client, actor, event, expense.id, "updated", ["customTags"], { customTags: before }, { customTags: after });
+  const changedFields = [
+    ...(!categoryUnchanged ? ["category"] : []),
+    ...(!mealUnchanged ? ["meal"] : []),
+    ...(!customUnchanged ? ["customTags"] : []),
+  ];
+  await insertAudit(client, actor, event, expense.id, "updated", changedFields,
+    { category: expense.category_name, meal: expense.meal_name, customTags: before },
+    {
+      category: requestedCategory === null ? expense.category_name : CATEGORY_DISPLAY_NAMES[requestedCategory],
+      meal: requestedMeal === null ? expense.meal_name : MEAL_DISPLAY_NAMES[requestedMeal],
+      customTags: after,
+    });
   return applied(
-    `已修改 #${expense.public_id}\n標籤：${after.length === 0 ? "無" : after.map((name) => `#${name}`).join(" ")}`,
+    `已修改 #${expense.public_id}\n標籤：${names.length === 0 ? "無" : names.map((name) => `#${name}`).join(" ")}`,
     expense.public_id,
   );
 }
@@ -789,6 +833,12 @@ async function deleteMealTag(client: PoolClient, ledgerId: string, transactionId
 }
 
 async function upsertCustomTag(client: PoolClient, ledgerId: string, name: string): Promise<string> {
+  const existing = await client.query<{ id: string; type: string }>(
+    "SELECT id::text, type::text FROM tag WHERE ledger_id=$1 AND normalized_name=$2 AND is_active",
+    [ledgerId, name],
+  );
+  if (existing.rows[0]?.type === "custom") return existing.rows[0].id;
+  if (existing.rowCount !== 0) throw new Error("reserved_system_tag_name");
   const result = await client.query<{ id: string }>(
     `INSERT INTO tag (ledger_id,type,code,display_name,normalized_name,is_system,is_active)
      VALUES ($1,'custom',encode(digest($2::text,'sha256'::text),'hex'),$2,$2,false,true)
@@ -859,7 +909,7 @@ async function withRefreshedDetail(
   actor: CommandActor,
   result: LedgerCommandResult,
 ): Promise<LedgerCommandResult> {
-  if (result.outcome !== "applied" || result.publicId === undefined) return result;
+  if (result.outcome === "rejected" || result.publicId === undefined) return result;
   const detail = await queryDetail(client, actor, result.publicId);
   return detail.message === undefined ? result : { ...result, message: detail.message };
 }

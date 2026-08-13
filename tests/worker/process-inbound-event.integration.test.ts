@@ -184,7 +184,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
   });
 
   it("replaces explicit custom tags and returns the refreshed edit card", async () => {
-    await insertTextEvent("E-tags-replace", "M-tags-replace", "改 #K7M2Q9TX 標籤 #公司 #午休");
+    await insertTextEvent("E-tags-replace", "M-tags-replace", "改 #K7M2Q9TX 標籤 #食物 #午餐 #公司 #午休");
     expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied", publicId: "K7M2Q9TX" });
     const state = await pool.query<{ tags: string[]; contents: unknown }>(
       `SELECT ARRAY(
@@ -198,7 +198,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
           WHERE source_webhook_event_id='E-tags-replace') AS contents`,
     );
     expect(state.rows[0]?.tags).toEqual(["公司", "午休"]);
-    expect(JSON.stringify(state.rows[0]?.contents)).toContain('"fillInText":"改 #K7M2Q9TX 標籤 #公司 #午休"');
+    expect(JSON.stringify(state.rows[0]?.contents)).toContain('"fillInText":"改 #K7M2Q9TX 標籤 #食物 #午餐 #公司 #午休"');
   });
 
   it("rejects another member mutating a personal expense without an audit", async () => {
