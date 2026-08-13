@@ -329,6 +329,39 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     expect(delivery.rows[0]?.inbox_payload).toBeNull();
   });
 
+  it("pairs exactly one second member and returns an idempotent confirmation", async () => {
+    const pairingLedger = await admin.query<{ id: string }>(
+      "INSERT INTO ledger (name,line_group_id) VALUES ('Pairing ledger','C-pairing') RETURNING id::text",
+    );
+    const pairingLedgerId = pairingLedger.rows[0]!.id;
+    await admin.query(
+      "INSERT INTO member (ledger_id,line_user_id,display_name) VALUES ($1,'U-owner','帳本主人')",
+      [pairingLedgerId],
+    );
+    await admin.query(
+      `INSERT INTO inbound_event
+       (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+       VALUES ('E-pair-member',$1,'message','M-pair-member','2026-08-13T04:10:00.123Z',$2::jsonb)`,
+      [pairingLedgerId, JSON.stringify({
+        destination: "U-bot", source: { userId: "U-partner" },
+        message: { type: "text", text: "配對" },
+        replyTokenCiphertext: Buffer.from("cipher-pair").toString("base64"),
+      })],
+    );
+
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const paired = await pool.query<{ display_name: string; count: string }>(
+      `SELECT max(display_name) FILTER (WHERE line_user_id='U-partner') AS display_name,
+              count(*)::text AS count FROM member WHERE ledger_id=$1 AND is_active`,
+      [pairingLedgerId],
+    );
+    expect(paired.rows[0]).toEqual({ display_name: "另一半", count: "2" });
+    const reply = await pool.query<{ text: string }>(
+      "SELECT payload_json->'messages'->0->>'text' AS text FROM outbox_message WHERE source_webhook_event_id='E-pair-member'",
+    );
+    expect(reply.rows[0]?.text).toContain("配對成功");
+  });
+
   it("journals an unsend before purging the matching expense", async () => {
     await admin.query(
       `INSERT INTO inbound_event

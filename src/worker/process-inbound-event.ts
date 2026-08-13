@@ -267,10 +267,20 @@ async function processMessage(
 
   const identity = await loadIdentity(client, event.ledger_id, payload.source.userId);
   if (identity === null) {
+    if (payload.message.text.normalize("NFKC").trim() === "配對") {
+      return pairLedgerMember(client, event, payload.source.userId, payload.replyTokenCiphertext);
+    }
     await enqueueReply(client, event, null, payload.replyTokenCiphertext,
       "expense_create_rejected", "這位使用者目前無法在此帳本記帳。");
     await finish(client, event, "rejected");
     return processedResult(event, "rejected");
+  }
+
+  if (payload.message.text.normalize("NFKC").trim() === "配對") {
+    await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
+      "member_pairing_result", `你已經完成配對，帳本身份是「${identity.display_name}」。`);
+    await finish(client, event, "noop");
+    return processedResult(event, "noop");
   }
 
   const command = parseLedgerCommand(payload.message.text);
@@ -397,6 +407,46 @@ async function processMessage(
     outcome: "applied",
     publicId: saved.publicId,
   };
+}
+
+async function pairLedgerMember(
+  client: PoolClient,
+  event: ClaimedEvent,
+  lineUserId: string,
+  replyTokenCiphertext: string | undefined,
+): Promise<ProcessInboundEventResult> {
+  const ledger = await client.query<{ line_group_id: string }>(
+    "SELECT line_group_id FROM ledger WHERE id=$1 FOR UPDATE",
+    [event.ledger_id],
+  );
+  const destination = ledger.rows[0]?.line_group_id ?? null;
+  const members = await client.query<{ count: string }>(
+    "SELECT count(*)::text AS count FROM member WHERE ledger_id=$1 AND is_active",
+    [event.ledger_id],
+  );
+  if (Number(members.rows[0]?.count ?? 0) !== 1) {
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", "這個帳本目前無法接受新的配對成員。若要更換成員，請由帳本管理者處理。");
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+  const inserted = await client.query(
+    `INSERT INTO member (ledger_id,line_user_id,display_name)
+     VALUES ($1,$2,'另一半')
+     ON CONFLICT (ledger_id,line_user_id) DO NOTHING`,
+    [event.ledger_id, lineUserId],
+  );
+  if (inserted.rowCount !== 1) {
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", "這個 LINE 帳號已有帳本身份，但目前不是啟用狀態。請由帳本管理者處理。");
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+  await enqueueReply(client, event, destination, replyTokenCiphertext,
+    "member_pairing_result",
+    "配對成功！你現在可以直接輸入「牛肉麵 150」，或傳送「說明」查看所有指令。你的暫時名稱是「另一半」。");
+  await finish(client, event, "applied");
+  return processedResult(event, "applied");
 }
 
 async function loadIdentity(
@@ -571,6 +621,7 @@ async function enqueueReply(
     | "expense_create_rejected"
     | "ledger_command_result"
     | "ledger_onboarding"
+    | "member_pairing_result"
     | "expense_edit_notice",
   text: string,
   message?: LineReplyMessage,

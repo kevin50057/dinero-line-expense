@@ -124,6 +124,7 @@ export class PostgresLineEventInbox implements LineEventInbox {
         }
 
         const insert = await this.#toInboxInsert(
+          client,
           destination,
           ledgerId,
           acceptedEvent,
@@ -141,6 +142,7 @@ export class PostgresLineEventInbox implements LineEventInbox {
   }
 
   async #toInboxInsert(
+    client: PoolClient,
     destination: string,
     ledgerId: string,
     acceptedEvent: AcceptedLineEvent,
@@ -151,7 +153,12 @@ export class PostgresLineEventInbox implements LineEventInbox {
       throw new InvalidLineInboxEventError("event_time_invalid");
     }
 
-    const unauthorized = !authorization.authorized;
+    const databaseMember = !authorization.authorized && authorization.reason === "member_not_allowed"
+      ? await isActiveLedgerMember(client, ledgerId, event.source.userId)
+      : false;
+    const pairingRequest = !authorization.authorized && authorization.reason === "member_not_allowed"
+      && isPairingRequest(event);
+    const unauthorized = !authorization.authorized && !databaseMember && !pairingRequest;
     const payload = unauthorized
       ? null
       : await this.#authorizedTextPayload(destination, acceptedEvent);
@@ -223,6 +230,22 @@ export class PostgresLineEventInbox implements LineEventInbox {
       payload.replyTokenCiphertext = ciphertext.toString("base64");
     }
   }
+}
+
+async function isActiveLedgerMember(client: PoolClient, ledgerId: string, lineUserId: string | undefined): Promise<boolean> {
+  if (lineUserId === undefined) return false;
+  const result = await client.query(
+    "SELECT 1 FROM member WHERE ledger_id=$1 AND line_user_id=$2 AND is_active",
+    [ledgerId, lineUserId],
+  );
+  return result.rowCount === 1;
+}
+
+function isPairingRequest(event: AcceptedLineEvent["event"]): boolean {
+  return event.kind === "message" && event.message?.type === "text"
+    && typeof event.message.text === "string"
+    && event.message.text.normalize("NFKC").trim() === "配對"
+    && event.source.userId !== undefined;
 }
 
 function isUnroutableUnauthorizedEvent(event: AcceptedLineEvent): boolean {

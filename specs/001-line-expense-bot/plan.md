@@ -86,6 +86,7 @@ LINE handler 只負責驗證、將 event 安全寫入 inbox 與送出既定回�
 ## 7. 階段 5 — LINE 編輯、收回與 onboarding
 
 - 實作 `說明`、`分類`、`標籤`及 join event 歡迎訊息。
+- 實作限同一允許群組、限第二位 active member 的精確 `配對`自助加入流程，完成後立即清除暫存 payload。
 - 將說明、單筆、列表、期間摘要、搜尋與排行回覆呈現為通過嚴格 allowlist 的 LINE Flex Message 卡片。
 - LINE edit event 不改帳；只對已入帳 message 回覆正確修改指令。
 - 原 message 與 unsend handler 以 `(ledger, message ID)` 共用 transaction-scoped advisory lock，再操作 tombstone，處理亂序與真正並行。

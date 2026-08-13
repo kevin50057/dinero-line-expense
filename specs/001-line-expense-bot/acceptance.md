@@ -1129,3 +1129,25 @@ When 已授權成員查詢單筆、最近、期間、搜尋或排行
 Then LINE 回覆為 Flex bubble 且 altText 包含等價純文字摘要
 And outbound validator 拒絕未知元件、未知欄位、任意 URI action、超過 12 張 bubble 或超過 50 KB 的 Flex JSON
 ```
+
+### A85 — 第二位成員可用精確指令安全配對
+
+```gherkin
+Given 允許的純記帳群組已有且只有一位 active member
+And 另一位群組成員尚未授權
+When 她傳送完全等於「配對」的文字訊息
+Then admission boundary 暫存該事件的 user ID、加密 reply token 與固定文字「配對」
+And worker 鎖定 ledger、再次確認 active member 數為一後建立第二位 member
+And 回覆配對成功並立即清除 inbound payload
+And 她下一則一般記帳訊息可由 DB active member 身份通過授權
+
+When 已完成配對的成員再次傳送「配對」
+Then 不新增 member 且只回覆已完成配對
+
+Given 帳本已有兩位 active member
+When 第三位群組成員傳送「配對」
+Then 不建立 member 且回覆帳本無法接受新成員
+
+When 未授權成員傳送任何不是完全匹配「配對」的訊息
+Then 不保存 user ID、訊息文字或 reply token
+```

@@ -306,6 +306,14 @@
 - 說明、單筆、列表、期間摘要、搜尋與排行使用 LINE Flex Message；`altText` 保留完整純文字摘要供通知與不支援 Flex 的環境顯示。
 - Flex 卡片只使用系統白名單元件與 message action，不接受任意 URI action；說明可使用最多三張 carousel bubble，其餘查詢使用單張 bubble。
 
+### 7.7 第二位成員配對
+
+- 已有一位 active member 的帳本，可由同一個允許群組內的第二位 LINE 使用者傳送完全匹配的 `配對` 自助加入。
+- admission boundary 對尚未授權成員仍預設不保存 user ID 或訊息內容；唯一例外是正確群組內完全匹配的 `配對`，只保存到 worker 完成原子處理，完成後立即 redaction。
+- 配對時鎖定 ledger 並重新檢查 active member 數必須恰好為一，避免兩位候選人同時成為第二位成員。
+- 成功後第二位成員暫名為「另一半」，可立即新增、查詢與操作符合權限的帳目；重複傳送 `配對`只回覆已完成，不重複建立 member。
+- 已有兩位 active member、非允許群組、非文字、缺少 user ID 或不是完全匹配的訊息，均不得成為配對入口。
+
 ## 8. LINE 原生事件
 
 ### 8.1 編輯訊息

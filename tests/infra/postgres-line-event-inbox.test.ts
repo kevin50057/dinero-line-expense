@@ -74,6 +74,10 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
         textEvent("E-unauthorized", "M-unauthorized", "不能保存的秘密 999"),
         false,
       ),
+      acceptedEvent(
+        { ...textEvent("E-pairing", "M-pairing", "配對"), source: { type: "group", groupId: "C-ledger", userId: "U-partner" } },
+        false,
+      ),
       acceptedEvent({
         ...baseEvent("E-unsend", "unsend"),
         lineMessageId: "M-authorized",
@@ -96,7 +100,7 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
         ORDER BY webhook_event_id`,
     );
 
-    expect(result.rows).toHaveLength(3);
+    expect(result.rows).toHaveLength(4);
     const authorized = result.rows.find(
       (row) => row.webhook_event_id === "E-authorized",
     );
@@ -126,9 +130,19 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
       outcome_code: "unauthorized",
     });
     expect(
+      result.rows.find((row) => row.webhook_event_id === "E-pairing"),
+    ).toMatchObject({
+      payload_json: {
+        source: { userId: "U-partner" },
+        message: { type: "text", text: "配對" },
+      },
+      status: "pending",
+      outcome_code: null,
+    });
+    expect(
       result.rows.find((row) => row.webhook_event_id === "E-unsend"),
     ).toMatchObject({ payload_json: null, status: "pending" });
-    expect(encryptDeliveryCredential).toHaveBeenCalledTimes(1);
+    expect(encryptDeliveryCredential).toHaveBeenCalledTimes(2);
   });
 
   it("is idempotent for the same ledger and webhook event ID", async () => {
