@@ -160,8 +160,38 @@ function rowBox(row: CardRow) {
       ? details
       : [
           { type: "box", layout: "vertical", spacing: "xs", flex: 5, contents: details },
-          actionButton(row.action, 2),
+          rowActionBox(row.action),
         ],
+  };
+}
+
+function rowActionBox(action: CardAction) {
+  const actionPayload = "text" in action
+    ? { type: "message", label: truncate(action.label, 40), text: truncate(action.text, 300) }
+    : {
+        type: "postback",
+        label: truncate(action.label, 40),
+        data: truncate(action.data, 300),
+        inputOption: "openKeyboard",
+        fillInText: truncate(action.fillInText, 300),
+      };
+  return {
+    type: "box",
+    layout: "vertical",
+    flex: 2,
+    backgroundColor: BRAND,
+    cornerRadius: "md",
+    paddingAll: "8px",
+    justifyContent: "center",
+    contents: [text(action.label, {
+      size: "sm",
+      color: "#FFFFFF",
+      weight: "bold",
+      align: "center",
+      wrap: false,
+      flex: 0,
+    })],
+    action: actionPayload,
   };
 }
 

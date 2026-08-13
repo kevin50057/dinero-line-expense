@@ -94,11 +94,16 @@ function parseFlexComponent(value: unknown, depth: number, state: { components: 
   countComponent(depth, state);
   if (!isPlainRecord(value) || typeof value["type"] !== "string") fail();
   if (value["type"] === "box") {
-    if (!hasAllowedKeys(value, ["type", "layout", "contents", "spacing", "margin", "paddingAll", "backgroundColor", "cornerRadius", "flex"])) fail();
+    if (!hasAllowedKeys(value, ["type", "layout", "contents", "spacing", "margin", "paddingAll", "backgroundColor", "cornerRadius", "justifyContent", "flex", "action"])) fail();
     if (!isOneOf(value["layout"], ["vertical", "horizontal", "baseline"]) || !Array.isArray(value["contents"]) || value["contents"].length > 40) fail();
     const result: Record<string, unknown> = { type: "box", layout: value["layout"], contents: value["contents"].map((item) => parseFlexComponent(item, depth + 1, state)) };
     copyOptionalStrings(value, result, ["spacing", "margin", "paddingAll", "backgroundColor", "cornerRadius"]);
+    if (value["justifyContent"] !== undefined) {
+      if (!isOneOf(value["justifyContent"], ["flex-start", "center", "flex-end", "space-between", "space-around", "space-evenly"])) fail();
+      result["justifyContent"] = value["justifyContent"];
+    }
     copyOptionalFlex(value, result);
+    if (value["action"] !== undefined) result["action"] = parseMessageAction(value["action"]);
     return result;
   }
   if (value["type"] === "text") {
@@ -126,8 +131,7 @@ function parseFlexComponent(value: unknown, depth: number, state: { components: 
     const action = value["action"];
     let parsedAction: Record<string, unknown>;
     if (action["type"] === "message") {
-      if (!hasExactKeys(action, ["type", "label", "text"]) || !validText(action["label"], 1, 40) || !validText(action["text"], 1, 300)) fail();
-      parsedAction = { type: "message", label: action["label"], text: action["text"] };
+      parsedAction = parseMessageAction(action);
     } else if (action["type"] === "postback") {
       if (!hasExactKeys(action, ["type", "label", "data", "inputOption", "fillInText"]) ||
           !validText(action["label"], 1, 40) || !validText(action["data"], 1, 300) ||
@@ -143,6 +147,12 @@ function parseFlexComponent(value: unknown, depth: number, state: { components: 
     return result;
   }
   fail();
+}
+
+function parseMessageAction(value: unknown): Readonly<Record<string, unknown>> {
+  if (!isPlainRecord(value) || !hasExactKeys(value, ["type", "label", "text"]) || value["type"] !== "message" ||
+      !validText(value["label"], 1, 40) || !validText(value["text"], 1, 300)) fail();
+  return { type: "message", label: value["label"], text: value["text"] };
 }
 
 function copyOptionalStrings(source: Readonly<Record<string, unknown>>, target: Record<string, unknown>, keys: readonly string[]) {

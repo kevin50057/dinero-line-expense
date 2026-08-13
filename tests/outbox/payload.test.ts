@@ -83,12 +83,26 @@ describe("parseLineReplyPayload", () => {
     expect(parseLineReplyPayload(input)).toEqual(input);
   });
 
+  it("accepts a tappable box with a message action", () => {
+    const input = { messages: [{
+      type: "flex", altText: "最近紀錄",
+      contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [{
+        type: "box", layout: "vertical", flex: 2, backgroundColor: "#26322C",
+        cornerRadius: "md", paddingAll: "8px", justifyContent: "center",
+        contents: [{ type: "text", text: "編輯", color: "#FFFFFF", align: "center" }],
+        action: { type: "message", label: "編輯", text: "查 #K7M2Q9TX" },
+      }] } },
+    }] };
+    expect(parseLineReplyPayload(input)).toEqual(input);
+  });
+
   it.each([
     { messages: [{ type: "flex", altText: "", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [] } } }] },
     { messages: [{ type: "flex", altText: "ok", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [], secret: "no" } } }] },
     { messages: [{ type: "flex", altText: "ok", contents: { type: "carousel", contents: [] } }] },
     { messages: [{ type: "flex", altText: "ok", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [{ type: "button", action: { type: "uri", label: "no", uri: "https://example.com" } }] } } }] },
     { messages: [{ type: "flex", altText: "ok", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [{ type: "button", action: { type: "postback", label: "no", data: "x", inputOption: "openRichMenu", fillInText: "x" } }] } } }] },
+    { messages: [{ type: "flex", altText: "ok", contents: { type: "bubble", body: { type: "box", layout: "vertical", contents: [], action: { type: "uri", label: "no", uri: "https://example.com" } } } }] },
   ])("rejects expanded or malformed Flex payloads: %j", (input) => {
     expect(() => parseLineReplyPayload(input)).toThrow(InvalidLineReplyPayloadError);
   });

@@ -45,6 +45,8 @@ describe("LINE Flex card builders", () => {
     });
     const parsed = parseLineReplyPayload({ messages: [card] });
     expect(JSON.stringify(parsed)).toContain('"label":"編輯"');
+    expect(JSON.stringify(parsed)).toContain('"text":"編輯","size":"sm","color":"#FFFFFF"');
+    expect(JSON.stringify(parsed)).toContain('"justifyContent":"center"');
     expect(JSON.stringify(parsed)).toContain('"type":"postback"');
     expect(JSON.stringify(parsed)).toContain('"inputOption":"openKeyboard"');
     expect(JSON.stringify(parsed)).toContain('"fillInText":"改 #K7M2Q9TX 金額 150"');
