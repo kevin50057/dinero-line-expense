@@ -23,7 +23,7 @@ export function formatSavedExpenseReply(data: SavedExpenseReplyData): string {
             ? `${expense.meal.displayName}（自動）`
             : expense.meal.displayName,
         ]),
-    ...expense.customTags.map((tag) => tag.displayName),
+    ...expense.customTags.map((tag) => tag.source === "inferred" ? `${tag.displayName}（自動）` : tag.displayName),
   ];
   const date = expense.occurredOn.replaceAll("-", "/");
   const occurred =

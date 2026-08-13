@@ -4,6 +4,7 @@ import type {
   CategoryCode,
   MealAssignment,
   MealCode,
+  InferredCustomTagAssignment,
 } from "./types.js";
 
 export const RULE_VERSION = "1";
@@ -66,6 +67,7 @@ const CATEGORY_RULES: readonly CategoryRule[] = [
   categoryRule("household.electricity", "household", "電費", 70),
   categoryRule("household.internet", "household", "網路", 60),
   categoryRule("household.supplies", "household", "日用品", 70),
+  categoryRule("household.family_support", "household", "孝親費", 90),
 
   categoryRule("shopping.clothes", "shopping", "衣服", 70),
   categoryRule("shopping.shoes", "shopping", "鞋", 50),
@@ -111,6 +113,20 @@ const MEAL_INELIGIBLE_TERMS = [
   "飲料",
   "甜點",
   "點心",
+] as const;
+
+const NATIVE_FAMILY_STRONG_TERMS = [
+  "孝親費", "孝親", "父親節", "母親節",
+] as const;
+
+const NATIVE_FAMILY_RELATION_TERMS = [
+  "爸媽", "父母", "爸爸", "媽媽", "老爸", "老媽", "阿公", "阿嬤",
+  "爺爺", "奶奶", "外公", "外婆", "岳父", "岳母", "公公", "婆婆",
+] as const;
+
+const NATIVE_FAMILY_EXPENSE_TERMS = [
+  "生活費", "家用", "紅包", "醫藥費", "醫療費", "看診", "保險",
+  "禮物", "生日", "餐費", "旅費", "車票", "補助", "轉帳",
 ] as const;
 
 export function makeCategoryAssignment(
@@ -194,6 +210,27 @@ export function isMealEligibleDescription(description: string): boolean {
   }
 
   return MEAL_ELIGIBLE_TERMS.some((term) => normalized.includes(term));
+}
+
+/** Conservatively infers a cross-category life-context tag. */
+export function inferContextTags(description: string): readonly InferredCustomTagAssignment[] {
+  const normalized = description.normalize("NFKC").toLocaleLowerCase("zh-TW");
+  const strongMatch = NATIVE_FAMILY_STRONG_TERMS.find((term) => normalized.includes(term));
+  const relationMatch = NATIVE_FAMILY_RELATION_TERMS.find((term) => normalized.includes(term));
+  const expenseMatch = NATIVE_FAMILY_EXPENSE_TERMS.find((term) => normalized.includes(term));
+  const ruleTerm = strongMatch ?? (relationMatch !== undefined && expenseMatch !== undefined
+    ? `${relationMatch}+${expenseMatch}`
+    : undefined);
+  if (ruleTerm === undefined) return [];
+  return [{
+    type: "custom",
+    code: "native_family",
+    displayName: "原生家庭",
+    normalizedName: "原生家庭",
+    source: "inferred",
+    ruleKey: `context:native_family:${ruleTerm}`,
+    ruleVersion: RULE_VERSION,
+  }];
 }
 
 /**

@@ -5,6 +5,7 @@ import {
   MEAL_DISPLAY_NAMES,
   classifyDescription,
   inferMeal,
+  inferContextTags,
   parseAbsoluteDateToken,
   shiftCalendarDate,
   toZonedMinute,
@@ -99,11 +100,12 @@ export async function processLedgerCommand(
       }
     case "tags_help":
       {
-        const reply = "每筆會有 1 個分類、最多 1 個餐別，另可加最多 10 個自訂標籤。\n範例：牛肉麵 150 #約會";
+        const reply = "每筆會有 1 個分類、最多 1 個餐別，另可加最多 10 個情境標籤。孝親費等項目會自動加入「原生家庭」。\n範例：牛肉麵 150 #約會";
         return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 自訂整理", title: "用標籤留下情境", rows: [
           { label: "新增時", value: "牛肉麵 150 #約會 #台北" },
           { label: "事後加入", value: "加 #編號 標籤 #約會" },
           { label: "依標籤查詢", value: "本月 #約會" },
+          { label: "自動情境", value: "孝親費、爸媽紅包等 → 原生家庭" },
         ], note: "每筆最多 10 個自訂標籤。", actions: [{ label: "看分類", text: "分類" }] }));
       }
     case "detail":
@@ -543,6 +545,7 @@ async function updateDescription(client: PoolClient, actor: CommandActor, event:
     const meal = inferMeal(value, expense.category_code, localTime);
     await setInferredMeal(client, actor, expense.id, meal?.code ?? null, meal?.ruleKey ?? null);
   }
+  await syncInferredContextTags(client, actor, expense.id, value);
   await insertAudit(client, actor, event, expense.id, "updated", ["description"], { description: expense.description }, { description: value });
   return applied(`已修改 #${expense.public_id}\n項目：${expense.description} → ${value}`, expense.public_id);
 }
@@ -700,6 +703,30 @@ async function insertSystemTag(client: PoolClient, actor: CommandActor, transact
 async function setInferredMeal(client: PoolClient, actor: CommandActor, transactionId: string, code: MealCode | null, ruleKey: string | null) {
   await deleteMealTag(client, actor.ledgerId, transactionId);
   if (code !== null) await insertSystemTag(client, actor, transactionId, "meal", code, "inferred", ruleKey!);
+}
+
+async function syncInferredContextTags(
+  client: PoolClient,
+  actor: CommandActor,
+  transactionId: string,
+  description: string,
+) {
+  await client.query(
+    "DELETE FROM transaction_tag WHERE ledger_id=$1 AND transaction_id=$2 AND tag_type='custom' AND source='inferred'",
+    [actor.ledgerId, transactionId],
+  );
+  for (const assignment of inferContextTags(description)) {
+    await client.query(
+      `INSERT INTO transaction_tag (
+         ledger_id,transaction_id,tag_id,tag_type,source,rule_key,rule_version,assigned_by_member_id
+       )
+       SELECT $1,$2,t.id,'custom','inferred',$4,$5,NULL
+         FROM tag t
+        WHERE t.ledger_id=$1 AND t.type='custom' AND t.code=$3 AND t.is_system AND t.is_active
+       ON CONFLICT DO NOTHING`,
+      [actor.ledgerId, transactionId, assignment.code, assignment.ruleKey, assignment.ruleVersion],
+    );
+  }
 }
 
 async function deleteMealTag(client: PoolClient, ledgerId: string, transactionId: string) {

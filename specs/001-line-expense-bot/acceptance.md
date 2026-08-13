@@ -1184,3 +1184,33 @@ When 任一人傳送「切換個人模式」或「個人模式」
 Then ledger default scope 更新為 personal
 And 已存在交易的 scope 與 owner 全部保持不變
 ```
+
+### A87 — 原生家庭是可自動推定且跨分類的系統情境標籤
+
+```gherkin
+When 小明傳送「孝親費 5000」
+Then category 為 household
+And custom/context tag 有且只有一個「原生家庭」
+And tag source 為 inferred、assigned actor 為 null、rule key 可追溯
+And 回覆顯示「原生家庭（自動）」
+
+When 小明傳送「爸爸醫藥費 1200」
+Then category 為 health
+And 同時具有 inferred 原生家庭標籤
+
+When 小明傳送「朋友生日禮物 1000」或「自己看診 500」
+Then 不自動加入原生家庭
+
+When 小明傳送「孝親費 5000 #原生家庭」
+Then 原生家庭只保存一次且 source 為 explicit
+
+Given #FAM2XY88 的原生家庭標籤是 inferred
+When 小明傳送「改 #FAM2XY88 項目 自己房租」
+Then 自動原生家庭標籤被移除但 category 依規則更新
+
+When 小明傳送「本月 #原生家庭」
+Then 回傳跨 category 的 active 原生家庭支出總額
+
+When DB 嘗試建立 source=inferred 的一般使用者 custom tag assignment
+Then trigger 原子拒絕，只有 active system context tag 可由規則推定
+```

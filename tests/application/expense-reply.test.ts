@@ -50,6 +50,17 @@ describe("expense replies", () => {
     ).toContain("時間：2026/08/12（時間未指定）");
   });
 
+  it("marks an inferred 原生家庭 tag as automatic", () => {
+    const parsed = parseExpenseMessage("孝親費 5000", {
+      eventTimestamp: "2026-08-13T04:10:00.000Z",
+      timezone: "Asia/Taipei",
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(formatSavedExpenseReply({ publicId: "FAM2LY88", expense: parsed.value, payerDisplayName: "小明" }))
+      .toContain("原生家庭（自動）");
+  });
+
   it("wraps actionable parse errors in a LINE text payload", () => {
     const payload = lineTextReply(
       formatExpenseParseErrorReply({

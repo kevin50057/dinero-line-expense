@@ -40,6 +40,7 @@ Seed 會明確設定：
 - 帳本時區為 `Asia/Taipei`。
 - 8 個 category：食物、交通、娛樂、居家、購物、醫療健康、旅遊、未分類。
 - 5 個 meal：早餐、午餐、下午茶、晚餐、宵夜。
+- 1 個 system context tag：原生家庭；只有規則引擎可建立 inferred assignment。
 
 ## 實作必須遵守的 DB workflow
 

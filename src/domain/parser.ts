@@ -12,6 +12,7 @@ import {
   MEAL_BY_DISPLAY_NAME,
   RULE_VERSION,
   classifyDescription,
+  inferContextTags,
   inferMeal,
   makeCategoryAssignment,
   makeMealAssignment,
@@ -224,10 +225,20 @@ export function parseExpenseMessage(
         )
       : inferMeal(description, category.code, state.occurredTime);
 
+  const customTagsByName = new Map(
+    parsedTags.value.customTags.map((tag) => [tag.normalizedName, tag] as const),
+  );
+  for (const inferredTag of inferContextTags(description)) {
+    if (!customTagsByName.has(inferredTag.normalizedName) && customTagsByName.size < MAX_CUSTOM_TAGS) {
+      customTagsByName.set(inferredTag.normalizedName, inferredTag);
+    }
+  }
+  const customTags = [...customTagsByName.values()];
+
   const tags = [
     category,
     ...(meal === null ? [] : [meal]),
-    ...parsedTags.value.customTags,
+    ...customTags,
   ];
 
   return {
@@ -245,7 +256,7 @@ export function parseExpenseMessage(
       occurredTimePrecision: state.occurredTimePrecision,
       category,
       meal,
-      customTags: parsedTags.value.customTags,
+      customTags,
       tags,
     },
   };

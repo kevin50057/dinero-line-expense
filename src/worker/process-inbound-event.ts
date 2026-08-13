@@ -530,7 +530,9 @@ async function insertTypedTags(
 ): Promise<void> {
   for (const assignment of assignments) {
     const tag = assignment.type === "custom"
-      ? await upsertCustomTag(client, ledgerId, assignment.displayName, assignment.normalizedName)
+      ? assignment.source === "inferred"
+        ? await loadSystemTag(client, ledgerId, "custom", assignment.code)
+        : await upsertCustomTag(client, ledgerId, assignment.displayName, assignment.normalizedName)
       : await loadSystemTag(client, ledgerId, assignment.type, assignment.code);
     await client.query(
       `INSERT INTO transaction_tag (
@@ -549,7 +551,7 @@ async function insertTypedTags(
 async function loadSystemTag(
   client: PoolClient,
   ledgerId: string,
-  type: "category" | "meal",
+  type: "category" | "meal" | "custom",
   code: string,
 ): Promise<string> {
   const result = await client.query<{ id: string }>(

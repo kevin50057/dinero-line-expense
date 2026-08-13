@@ -163,6 +163,19 @@ describe("parseExpenseMessage create semantics", () => {
     expect(expense.customTags[0]?.displayName).toBe("紀念日");
   });
 
+  it("adds and deduplicates the inferred 原生家庭 context tag", () => {
+    const inferred = parseOk("爸爸醫藥費 1200");
+    expect(inferred.category.code).toBe("health");
+    expect(inferred.customTags).toEqual([
+      expect.objectContaining({ displayName: "原生家庭", source: "inferred", code: "native_family" }),
+    ]);
+
+    const explicit = parseOk("孝親費 5000 #原生家庭");
+    expect(explicit.category.code).toBe("household");
+    expect(explicit.customTags).toHaveLength(1);
+    expect(explicit.customTags[0]).toMatchObject({ displayName: "原生家庭", source: "explicit" });
+  });
+
   it("treats an explicit meal as food and preserves a meal-only description", () => {
     const mealOnly = parseOk("晚餐 200", "2026-08-13T12:00:00.000Z");
     expect(mealOnly).toMatchObject({

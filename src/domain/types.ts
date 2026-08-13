@@ -41,7 +41,7 @@ export interface MealAssignment {
   readonly ruleVersion: string;
 }
 
-export interface CustomTagAssignment {
+export interface ExplicitCustomTagAssignment {
   readonly type: "custom";
   readonly displayName: string;
   readonly normalizedName: string;
@@ -49,6 +49,20 @@ export interface CustomTagAssignment {
   readonly ruleKey: "parser:user_hashtag";
   readonly ruleVersion: string;
 }
+
+export interface InferredCustomTagAssignment {
+  readonly type: "custom";
+  readonly code: "native_family";
+  readonly displayName: "原生家庭";
+  readonly normalizedName: "原生家庭";
+  readonly source: "inferred";
+  readonly ruleKey: string;
+  readonly ruleVersion: string;
+}
+
+export type CustomTagAssignment =
+  | ExplicitCustomTagAssignment
+  | InferredCustomTagAssignment;
 
 export type TypedTag =
   | CategoryAssignment

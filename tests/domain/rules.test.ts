@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyDescription,
   inferMeal,
+  inferContextTags,
   isMealEligibleDescription,
 } from "../../src/domain/index.js";
 
@@ -27,6 +28,22 @@ describe("category rules", () => {
     expect(category.code).toBe("travel");
     expect(category.ruleKey).toBe("category:travel.hotel");
   });
+});
+
+describe("context tag rules", () => {
+  it.each(["孝親費", "給媽媽紅包", "爸爸醫藥費", "父親節禮物"])(
+    "infers 原生家庭 for %s",
+    (description) => {
+      expect(inferContextTags(description)).toEqual([
+        expect.objectContaining({ code: "native_family", displayName: "原生家庭", source: "inferred" }),
+      ]);
+    },
+  );
+
+  it.each(["自己看診", "朋友生日禮物", "家庭餐廳"])(
+    "does not overmatch %s",
+    (description) => expect(inferContextTags(description)).toEqual([]),
+  );
 });
 describe("meal rules", () => {
   it.each(["牛肉麵", "炒麵", "排骨便當", "雞肉飯"])(

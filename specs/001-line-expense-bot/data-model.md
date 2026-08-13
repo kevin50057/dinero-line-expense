@@ -6,7 +6,7 @@
 - `scope` 是支出的帳務範圍，不是標籤。它使用獨立 enum：`shared` 或 `personal`。
 - 帳本允許裸格式，`牛肉麵 150` 使用帳本目前的 `default_scope`；初始為 `personal`，可由兩位成員在 LINE 切換，明確 scope 前綴只覆蓋該筆。
 - 建立者、付款人與個人支出的所有人是三個不同概念。改付款人不會連動改所有人。
-- 分類、餐別與自訂標籤共用 `tag`／`transaction_tag`，但由 `tag_type` 保留型別：每筆交易恰好一個分類、至多一個餐別、任意數量自訂標籤。
+- 分類、餐別與情境標籤共用 `tag`／`transaction_tag`，但由 `tag_type` 保留型別：每筆交易恰好一個分類、至多一個餐別、至多十個 custom/context tags。
 - `occurred_on` 永遠有值；精確時間可以未知。不能用訊息送出時間假裝成補登支出的發生時間。
 - 使用者取消是可還原的 soft void。LINE 收回原始新增訊息是隱私刪除：刪除該筆業務交易、標籤關聯與稽核資料，只留下不含訊息內容的 message tombstone。
 - webhook 採 transactional inbox，LINE 回覆採 transactional outbox。DB 的業務異動、audit、outbox enqueue 與 inbox 完成狀態必須在同一個 transaction 內提交。
@@ -198,7 +198,7 @@ erDiagram
 
 - `category`：消費主分類，例如食物、交通、娛樂、居家、購物、醫療健康、旅遊、未分類。
 - `meal`：早餐、午餐、下午茶、晚餐、宵夜。
-- `custom`：使用者自訂，例如約會、台南、紀念日。
+- `custom`：使用者自訂，例如約會、台南、紀念日；也可由 migration 建立受保護的 system context tag，例如 `native_family / 原生家庭`。
 
 必要索引與生命週期：
 
@@ -206,7 +206,7 @@ erDiagram
 2. `(ledger_id, type, code)` 唯一；`code` 是不隨改名變動的穩定代碼。
 3. `(ledger_id, normalized_name)` 在 active tag 中跨所有型別唯一。這既避免 `約會` 的空白／大小寫變體，也禁止 custom tag 冒用 `食物`、`午餐`等 category／meal 保留名稱。
 4. MVP 不提供 category／meal tag 的新增、改名或刪除；這些系統 tag 由 migration seed，且不可停用。`is_active` 是未來版本的保留欄位。
-5. custom tag 在第一次有效 `#標籤` 輸入時 lazy create；MVP 同樣不提供獨立的標籤管理 API。未來若提供停用，已被交易使用的 tag 也只能設 `is_active = false`，不能實體刪除。
+5. 一般 custom tag 在第一次有效 `#標籤` 輸入時 lazy create；system context tag 由 migration 建立且可由保守規則以 `source=inferred`指派。DB trigger 禁止 inferred custom assignment 指向一般使用者 tag。
 6. custom tag 的 `display_name` 必須是 1–20 個 Unicode 字元且不含空白或 `#`；正規化規則必須版本固定並在寫入前執行。
 
 ### `expense_transaction`
@@ -250,7 +250,7 @@ DB 約束：
 3. `(ledger_id, transaction_id, tag_type)` 的 meal partial unique index，保證「至多一個 meal」。
 4. PostgreSQL deferred constraint trigger 在 transaction 結束前驗證每筆交易「恰好一個 category」。建立交易與 category tag 必須放在同一 DB transaction；分類失敗時貼 `category:uncategorized`。
 5. deferred constraint trigger 驗證 meal tag 只能與 `category:food` 共存。
-6. `tag_type = custom` 在 MVP 只能是 `source = explicit`；category 與 meal 可以 explicit 或 inferred。
+6. 一般使用者 `tag_type = custom`只能是 `source = explicit`；受 migration 保護的 system context tag 可為 inferred，且必須由 DB trigger 驗證目標 tag 的 `is_system`與 active 狀態。category 與 meal 可以 explicit 或 inferred。
 7. `source = explicit` 時 `assigned_by_member_id` 必填；`source = inferred` 時必須為空。
 8. `(ledger_id, tag_id, tag_type)` 複合外鍵到 `tag`，避免把 category tag 偽裝成 meal tag 來繞過唯一限制。
 9. deferred constraint trigger 驗證每筆交易最多 10 個 custom tag；重複輸入因主鍵只保存一次。

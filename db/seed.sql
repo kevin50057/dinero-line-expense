@@ -103,7 +103,8 @@ CROSS JOIN (
     ('meal', 'lunch', '午餐', '午餐'),
     ('meal', 'afternoon_tea', '下午茶', '下午茶'),
     ('meal', 'dinner', '晚餐', '晚餐'),
-    ('meal', 'late_night', '宵夜', '宵夜')
+    ('meal', 'late_night', '宵夜', '宵夜'),
+    ('custom', 'native_family', '原生家庭', '原生家庭')
 ) AS seed_tag(type, code, display_name, normalized_name)
 WHERE l.line_group_id = :'line_group_id'
 ON CONFLICT (ledger_id, type, code) DO NOTHING;

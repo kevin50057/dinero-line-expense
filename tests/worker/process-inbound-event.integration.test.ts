@@ -32,6 +32,8 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await admin.query(
       migration.replace("CREATE EXTENSION IF NOT EXISTS pgcrypto;", ""),
     );
+    await admin.query(await readFile(resolve("db/migrations/002_personal_default_mode.sql"), "utf8"));
+    await admin.query(await readFile(resolve("db/migrations/003_native_family_system_tag.sql"), "utf8"));
     const ledger = await admin.query<{ id: string }>(
       `INSERT INTO ledger (name, line_group_id) VALUES ('Worker ledger', 'C-worker')
        RETURNING id::text AS id`,
@@ -52,7 +54,8 @@ describeWithPostgres("processNextInboundEvent integration", () => {
          ('category','travel','旅遊'), ('category','uncategorized','未分類'),
          ('meal','breakfast','早餐'), ('meal','lunch','午餐'),
          ('meal','afternoon_tea','下午茶'), ('meal','dinner','晚餐'),
-         ('meal','late_night','宵夜')
+         ('meal','late_night','宵夜'),
+         ('custom','native_family','原生家庭')
        ) AS x(type, code, name)`,
       [ledgerId],
     );
@@ -155,7 +158,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
       `SELECT payload_json AS payload FROM outbox_message WHERE source_webhook_event_id='E-recent'`,
     );
     expect(reply.rows[0]?.payload.messages[0]).toMatchObject({ type: "flex" });
-    expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("小明個人最近 1 筆");
+    expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("小明個人最近 2 筆");
   });
 
   it("updates an owned personal expense and records exactly one before/after audit", async () => {
@@ -205,7 +208,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
       `SELECT payload_json AS payload FROM outbox_message WHERE source_webhook_event_id='E-month'`,
     );
     expect(reply.rows[0]?.payload.messages[0]).toMatchObject({ type: "flex" });
-    expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("1 筆，合計 180 元");
+    expect(reply.rows[0]?.payload.messages[0]?.altText).toContain("2 筆，合計 260 元");
   });
 
   it("returns Flex cards for weekly reports, search and category ranking", async () => {
@@ -232,7 +235,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
   });
 
   it("applies typed field and custom-tag updates while preserving invariants", async () => {
-    await insertTextEvent("E-variant-create", "M-variant-create", "牛肉麵 150");
+    await insertTextEvent("E-variant-create", "M-variant-create", "共同 牛肉麵 150");
     expect(await processNextInboundEvent(pool, { generatePublicId: () => "V4R2ANT3" }))
       .toMatchObject({ outcome: "applied" });
 
@@ -331,7 +334,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
 
   it("persists a group-wide personal/shared mode while explicit scope still wins", async () => {
     await insertTextEvent("E-mode-personal", "M-mode-personal", "切換個人模式");
-    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "noop" });
     await insertTextEvent("E-mode-personal-create", "M-mode-personal-create", "早餐 90");
     expect(await processNextInboundEvent(pool, { generatePublicId: () => "PERS2NAX" }))
       .toMatchObject({ outcome: "applied", publicId: "PERS2NAX" });
@@ -379,6 +382,40 @@ describeWithPostgres("processNextInboundEvent integration", () => {
       expect(reply.rows[0]?.alt_text).not.toContain("牛肉麵");
       expect(reply.rows[0]?.alt_text).not.toContain("早餐");
     }
+  });
+
+  it("persists and queries the inferred 原生家庭 system context tag", async () => {
+    await insertTextEvent("E-native-family", "M-native-family", "孝親費 5000");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "FAM2XY88" }))
+      .toMatchObject({ outcome: "applied", publicId: "FAM2XY88" });
+    const tag = await pool.query<{ source: string; actor: string | null; is_system: boolean; category: string }>(
+      `SELECT context.source::text, context.assigned_by_member_id::text AS actor,
+              context_tag.is_system, category_tag.code AS category
+         FROM expense_transaction et
+         JOIN transaction_tag context ON context.transaction_id=et.id AND context.tag_type='custom'
+         JOIN tag context_tag ON context_tag.id=context.tag_id AND context_tag.code='native_family'
+         JOIN transaction_tag category ON category.transaction_id=et.id AND category.tag_type='category'
+         JOIN tag category_tag ON category_tag.id=category.tag_id
+        WHERE et.public_id='FAM2XY88'`,
+    );
+    expect(tag.rows[0]).toEqual({ source: "inferred", actor: null, is_system: true, category: "household" });
+
+    await insertTextEvent("E-native-family-query", "M-native-family-query", "本月 #原生家庭");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const reply = await pool.query<{ alt_text: string }>(
+      `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+         FROM outbox_message WHERE source_webhook_event_id='E-native-family-query'`,
+    );
+    expect(reply.rows[0]?.alt_text).toContain("5,000 元");
+
+    await insertTextEvent("E-native-family-update", "M-native-family-update", "改 #FAM2XY88 項目 自己房租");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const remaining = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM transaction_tag tt
+        WHERE tt.transaction_id=(SELECT id FROM expense_transaction WHERE public_id='FAM2XY88')
+          AND tt.tag_type='custom' AND tt.source='inferred'`,
+    );
+    expect(remaining.rows[0]?.count).toBe("0");
   });
 
   it("pairs exactly one second member and returns an idempotent confirmation", async () => {
