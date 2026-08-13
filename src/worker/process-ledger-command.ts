@@ -19,6 +19,7 @@ import type {
 } from "../domain/index.js";
 import { helpCards, infoCard } from "../application/line-cards.js";
 import type { LineReplyMessage } from "../outbox/payload.js";
+import { learnCategoryCorrection, resolveCategoryKnowledge } from "./category-knowledge.js";
 
 export interface CommandActor {
   readonly ledgerId: string;
@@ -96,8 +97,10 @@ export async function processLedgerCommand(
         return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 標籤系統", title: "分類與餐別", rows: [
           { label: "支出分類", value: "食物・交通・娛樂・居家・購物・醫療健康・旅遊・未分類" },
           { label: "食物餐別", value: "早餐・午餐・下午茶・晚餐・宵夜" },
-        ], note: "你也可以加 #約會、#台南 等自訂標籤。", actions: [{ label: "標籤說明", text: "標籤" }] }));
+        ], note: "你也可以加 #約會、#台南 等自訂標籤。", actions: [{ label: "分類知識表", text: "分類規則" }, { label: "標籤說明", text: "標籤" }] }));
       }
+    case "category_rules":
+      return queryCategoryRules(client, actor);
     case "tags_help":
       {
         const reply = "每筆會有 1 個分類、最多 1 個餐別，另可加最多 10 個情境標籤。孝親費等項目會自動加入「原生家庭」。\n範例：牛肉麵 150 #約會";
@@ -129,6 +132,47 @@ export async function processLedgerCommand(
     case "update":
       return withRefreshedDetail(client, actor, await updateExpense(client, actor, event, command.publicId, command.change));
   }
+}
+
+async function queryCategoryRules(client: PoolClient, actor: CommandActor): Promise<LedgerCommandResult> {
+  const system = await client.query<{ category_code: CategoryCode; count: string; examples: string[] }>(
+    `SELECT category_code, count(*)::text AS count,
+            (array_agg(normalized_pattern ORDER BY priority DESC, char_length(normalized_pattern) DESC))[1:5] AS examples
+       FROM category_knowledge_rule
+      WHERE ledger_id IS NULL AND is_active
+      GROUP BY category_code
+      ORDER BY category_code`,
+  );
+  const learned = await client.query<{ count: string; examples: string[] | null }>(
+    `SELECT count(*)::text AS count,
+            (array_agg(normalized_pattern ORDER BY updated_at DESC))[1:5] AS examples
+       FROM category_knowledge_rule
+      WHERE ledger_id=$1 AND is_active AND source='member_correction'`,
+    [actor.ledgerId],
+  );
+  const systemCount = system.rows.reduce((sum, row) => sum + Number(row.count), 0);
+  const learnedCount = Number(learned.rows[0]?.count ?? 0);
+  const reply = `分類知識表：系統 ${systemCount} 條、你們專屬 ${learnedCount} 條。手動改分類後會自動學習。`;
+  return applied(reply, undefined, infoCard({
+    altText: reply,
+    kicker: "DINERO 分類知識表",
+    title: `${systemCount + learnedCount} 條分類規則`,
+    summary: `系統 ${systemCount}・專屬 ${learnedCount}`,
+    rows: [
+      ...system.rows.map((row) => ({
+        label: CATEGORY_DISPLAY_NAMES[row.category_code],
+        value: `${row.count} 個常見詞`,
+        meta: row.examples.join("・"),
+      })),
+      ...(learnedCount === 0 ? [] : [{
+        label: "你們教會我的",
+        value: `${learnedCount} 條專屬規則`,
+        meta: learned.rows[0]?.examples?.join("・") ?? "",
+      }]),
+    ],
+    note: "分類順序：帳本專屬精確規則 → 系統常見詞 → 內建保守規則。",
+    actions: [{ label: "最近紀錄", text: "最近 5" }, { label: "分類說明", text: "分類" }],
+  }));
 }
 
 async function changeLedgerMode(
@@ -543,7 +587,12 @@ async function updateExpense(
 
 async function updateDescription(client: PoolClient, actor: CommandActor, event: CommandEvent, expense: ExpenseRow, value: string) {
   if (expense.description === value) return noop("項目沒有變更。", expense.public_id);
-  const inferredCategory = expense.category_source === "inferred" ? classifyDescription(value) : null;
+  const knowledge = expense.category_source === "inferred"
+    ? await resolveCategoryKnowledge(client, actor.ledgerId, value)
+    : null;
+  const inferredCategory = expense.category_source === "inferred"
+    ? knowledge?.category ?? classifyDescription(value)
+    : null;
   if (inferredCategory !== null && inferredCategory.code !== "food" && expense.meal_source === "explicit") {
     return rejected("修改後會讓明確餐別與非食物分類衝突，請先將餐別改為無。", expense.public_id);
   }
@@ -554,7 +603,7 @@ async function updateDescription(client: PoolClient, actor: CommandActor, event:
   }
   if (expense.meal_source === "inferred") {
     const localTime = expense.occurred_at === null ? null : toZonedMinute(expense.occurred_at, actor.timezone)?.time ?? null;
-    const meal = inferMeal(value, expense.category_code, localTime);
+    const meal = inferMeal(value, expense.category_code, localTime, knowledge?.mealEligible ?? false);
     await setInferredMeal(client, actor, expense.id, meal?.code ?? null, meal?.ruleKey ?? null);
   }
   await syncInferredContextTags(client, actor, expense.id, value);
@@ -563,7 +612,12 @@ async function updateDescription(client: PoolClient, actor: CommandActor, event:
 }
 
 async function updateCategory(client: PoolClient, actor: CommandActor, event: CommandEvent, expense: ExpenseRow, value: CategoryCode | "auto") {
-  const assignment = value === "auto" ? classifyDescription(expense.description) : { code: value, ruleKey: "manual:category" };
+  const knowledge = value === "auto"
+    ? await resolveCategoryKnowledge(client, actor.ledgerId, expense.description)
+    : null;
+  const assignment = value === "auto"
+    ? knowledge?.category ?? classifyDescription(expense.description)
+    : { code: value, ruleKey: "manual:category" };
   if (assignment.code !== "food" && expense.meal_source === "explicit") return rejected("非食物分類不能保留明確餐別，請先將餐別改為無。", expense.public_id);
   const source = value === "auto" ? "inferred" : "explicit";
   if (expense.category_code === assignment.code && expense.category_source === source) return noop("分類沒有變更。", expense.public_id);
@@ -571,10 +625,13 @@ async function updateCategory(client: PoolClient, actor: CommandActor, event: Co
   if (assignment.code !== "food") await deleteMealTag(client, actor.ledgerId, expense.id);
   else if (expense.meal_source !== "explicit") {
     const time = expense.occurred_at === null ? null : toZonedMinute(expense.occurred_at, actor.timezone)?.time ?? null;
-    const meal = inferMeal(expense.description, assignment.code, time);
+    const meal = inferMeal(expense.description, assignment.code, time, knowledge?.mealEligible ?? false);
     await setInferredMeal(client, actor, expense.id, meal?.code ?? null, meal?.ruleKey ?? null);
   }
   await bumpVersion(client, actor.ledgerId, expense.id);
+  if (value !== "auto") {
+    await learnCategoryCorrection(client, actor.ledgerId, expense.description, value);
+  }
   await insertAudit(client, actor, event, expense.id, "updated", ["category"], { category: expense.category_name }, { category: CATEGORY_DISPLAY_NAMES[assignment.code] });
   return applied(`已修改 #${expense.public_id}\n分類：${expense.category_name} → ${CATEGORY_DISPLAY_NAMES[assignment.code]}`, expense.public_id);
 }
@@ -748,6 +805,7 @@ async function replaceExplicitCustomTags(
   }
   if (requestedCategory !== null && !categoryUnchanged) {
     await replaceSystemTag(client, actor, expense.id, "category", requestedCategory, "explicit", "manual:card_tags");
+    await learnCategoryCorrection(client, actor.ledgerId, expense.description, requestedCategory);
     if (requestedCategory !== "food") await deleteMealTag(client, actor.ledgerId, expense.id);
   }
   if (requestedMeal !== null && !mealUnchanged) {

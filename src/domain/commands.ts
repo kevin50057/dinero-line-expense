@@ -14,7 +14,7 @@ export type LedgerCommand =
   | { readonly kind: "update"; readonly publicId: string; readonly change: UpdateChange }
   | { readonly kind: "tags"; readonly operation: "add" | "remove"; readonly publicId: string; readonly tags: readonly string[] }
   | { readonly kind: "void" | "restore"; readonly publicId: string }
-  | { readonly kind: "help" | "categories" | "tags_help" };
+  | { readonly kind: "help" | "categories" | "category_rules" | "tags_help" };
 
 export type CommandFilter =
   | { readonly kind: "all" }
@@ -47,6 +47,7 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   const text = input.normalize("NFKC").trim().replace(/\s+/gu, " ");
   if (text === "說明" || text === "幫助" || text === "help") return command({ kind: "help" });
   if (text === "分類") return command({ kind: "categories" });
+  if (text === "分類規則" || text === "分類知識表") return command({ kind: "category_rules" });
   if (text === "標籤") return command({ kind: "tags_help" });
 
   let match = new RegExp(`^查 #${PUBLIC_ID}$`, "iu").exec(text);

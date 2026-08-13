@@ -42,6 +42,12 @@ Seed 會明確設定：
 - 5 個 meal：早餐、午餐、下午茶、晚餐、宵夜。
 - 1 個 system context tag：原生家庭；只有規則引擎可建立 inferred assignment。
 
+## 分類知識表
+
+`004_category_knowledge.sql` 建立 `category_knowledge_rule`，並載入台灣常見消費的系統規則。分類時依序採用帳本專屬精確規則、系統 exact／contains 規則，再回退到程式內的保守分類器。每次命中會更新 `hit_count` 與 `last_matched_at`。
+
+使用者手動修改分類時，worker 會以 `member_correction` 寫入該帳本的 exact 規則；它不會影響其他帳本，也永遠不會覆蓋訊息裡明確指定的分類。
+
 ## 實作必須遵守的 DB workflow
 
 - 每筆 `expense_transaction` 和它恰好一個 category tag 必須在同一個 transaction 寫入；deferred constraint 會在 commit 時驗證。meal 至多一個且只能和 `category:food` 共存，自訂標籤至多十個。

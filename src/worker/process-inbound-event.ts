@@ -6,10 +6,11 @@ import {
   lineTextReply,
 } from "../application/expense-reply.js";
 import { generatePublicId } from "../application/public-id.js";
-import { parseExpenseMessage, parseLedgerCommand } from "../domain/index.js";
+import { inferMeal, parseExpenseMessage, parseLedgerCommand } from "../domain/index.js";
 import type { ParsedExpense, TypedTag } from "../domain/index.js";
 import type { LineReplyMessage } from "../outbox/payload.js";
 import { processLedgerCommand } from "./process-ledger-command.js";
+import { resolveCategoryKnowledge } from "./category-knowledge.js";
 
 const MAX_PUBLIC_ID_ATTEMPTS = 8;
 
@@ -379,16 +380,17 @@ async function processMessage(
     };
   }
 
+  const expense = await applyCategoryKnowledge(client, event.ledger_id, parsed.value);
   const saved = await insertExpenseWithCollisionRetry(
     client,
     event,
     identity,
-    parsed.value,
+    expense,
     payload.message.text,
     publicIdFactory,
   );
-  await insertTypedTags(client, event.ledger_id, saved.id, identity.member_id, parsed.value.tags);
-  await insertCreatedAudit(client, event, saved.id, identity.member_id, saved.publicId, parsed.value);
+  await insertTypedTags(client, event.ledger_id, saved.id, identity.member_id, expense.tags);
+  await insertCreatedAudit(client, event, saved.id, identity.member_id, saved.publicId, expense);
   await enqueueReply(
     client,
     event,
@@ -397,7 +399,7 @@ async function processMessage(
     "expense_create_result",
     formatSavedExpenseReply({
       publicId: saved.publicId,
-      expense: parsed.value,
+      expense,
       payerDisplayName: identity.display_name,
     }),
   );
@@ -407,6 +409,28 @@ async function processMessage(
     webhookEventId: event.webhook_event_id,
     outcome: "applied",
     publicId: saved.publicId,
+  };
+}
+
+async function applyCategoryKnowledge(
+  client: PoolClient,
+  ledgerId: string,
+  expense: ParsedExpense,
+): Promise<ParsedExpense> {
+  if (expense.category.source === "explicit") return expense;
+  const knowledge = await resolveCategoryKnowledge(client, ledgerId, expense.description);
+  if (knowledge === null) return expense;
+  const category = knowledge.category;
+  const meal = category.code === "food"
+    ? expense.meal?.source === "explicit"
+      ? expense.meal
+      : inferMeal(expense.description, category.code, expense.occurredTime, knowledge.mealEligible)
+    : null;
+  return {
+    ...expense,
+    category,
+    meal,
+    tags: [category, ...(meal === null ? [] : [meal]), ...expense.customTags],
   };
 }
 

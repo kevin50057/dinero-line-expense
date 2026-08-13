@@ -241,11 +241,12 @@ export function inferMeal(
   description: string,
   category: CategoryCode,
   occurredTime: string | null,
+  knownMealEligible = false,
 ): MealAssignment | null {
   if (
     category !== "food" ||
     occurredTime === null ||
-    !isMealEligibleDescription(description)
+    (!knownMealEligible && !isMealEligibleDescription(description))
   ) {
     return null;
   }

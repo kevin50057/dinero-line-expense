@@ -34,6 +34,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     );
     await admin.query(await readFile(resolve("db/migrations/002_personal_default_mode.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/003_native_family_system_tag.sql"), "utf8"));
+    await admin.query(await readFile(resolve("db/migrations/004_category_knowledge.sql"), "utf8"));
     const ledger = await admin.query<{ id: string }>(
       `INSERT INTO ledger (name, line_group_id) VALUES ('Worker ledger', 'C-worker')
        RETURNING id::text AS id`,
@@ -120,6 +121,48 @@ describeWithPostgres("processNextInboundEvent integration", () => {
        FROM inbound_event ie WHERE webhook_event_id = 'E-create'`,
     );
     expect(counts.rows[0]).toMatchObject({ audit: "1", outbox: "1", payload: null, outcome: "applied" });
+  });
+
+  it("classifies common spending from DB knowledge and infers its meal window", async () => {
+    await insertTextEvent("E-knowledge-toast", "M-knowledge-toast", "肉蛋吐司 85");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "T2AST888" }))
+      .toMatchObject({ outcome: "applied", publicId: "T2AST888" });
+    const tags = await pool.query<{ type: string; code: string; rule_key: string }>(
+      `SELECT tt.tag_type::text AS type, t.code, tt.rule_key
+         FROM expense_transaction et
+         JOIN transaction_tag tt ON tt.transaction_id=et.id AND tt.ledger_id=et.ledger_id
+         JOIN tag t ON t.id=tt.tag_id AND t.ledger_id=tt.ledger_id
+        WHERE et.public_id='T2AST888' AND tt.tag_type IN ('category','meal')
+        ORDER BY tt.tag_type`,
+    );
+    expect(tags.rows).toEqual([
+      expect.objectContaining({ type: "category", code: "food", rule_key: expect.stringContaining("knowledge:system_seed") }),
+      expect.objectContaining({ type: "meal", code: "lunch" }),
+    ]);
+    await pool.query("DELETE FROM expense_transaction WHERE public_id='T2AST888'");
+  });
+
+  it("learns a ledger-specific exact rule from a manual category correction", async () => {
+    await insertTextEvent("E-learn-create", "M-learn-create", "神秘商品 42");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "K3ARN888" }))
+      .toMatchObject({ outcome: "applied" });
+    await insertTextEvent("E-learn-update", "M-learn-update", "改 #K3ARN888 分類 購物");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    await insertTextEvent("E-learn-reuse", "M-learn-reuse", "神秘商品 55");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "R3S3X888" }))
+      .toMatchObject({ outcome: "applied" });
+    const result = await pool.query<{ code: string; source: string; rules: string }>(
+      `SELECT t.code, tt.source::text AS source,
+              (SELECT count(*)::text FROM category_knowledge_rule
+                WHERE ledger_id=$1 AND normalized_pattern='神秘商品' AND source='member_correction') AS rules
+         FROM expense_transaction et
+         JOIN transaction_tag tt ON tt.transaction_id=et.id AND tt.tag_type='category'
+         JOIN tag t ON t.id=tt.tag_id
+        WHERE et.public_id='R3S3X888'`,
+      [ledgerId],
+    );
+    expect(result.rows[0]).toMatchObject({ code: "shopping", source: "inferred", rules: "1" });
+    await pool.query("DELETE FROM expense_transaction WHERE public_id IN ('K3ARN888','R3S3X888')");
   });
 
   it("retries a ledger-local public ID collision without partial rows", async () => {
@@ -242,6 +285,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
       ["E-search", "找 咖啡", "搜尋「咖啡」"],
       ["E-ranking", "分類排行", "分類排行"],
       ["E-help", "說明", "記帳：牛肉麵"],
+      ["E-knowledge-card", "分類規則", "分類知識表"],
     ] as const;
     for (const [eventId, text, expectedAlt] of commands) {
       await insertTextEvent(eventId, `M-${eventId}`, text);
