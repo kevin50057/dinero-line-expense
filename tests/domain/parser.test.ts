@@ -251,6 +251,32 @@ describe("parseExpenseMessage date and time semantics", () => {
     });
   });
 
+  it.each([
+    ["昨天 早上 早餐店 80", "2026-08-12", "breakfast"],
+    ["前天 中 牛肉麵 150", "2026-08-11", "lunch"],
+    ["昨天 晚 火鍋 800", "2026-08-12", "dinner"],
+    ["昨日 上午 飯糰 45", "2026-08-12", "breakfast"],
+    ["昨天早上 早餐店 80", "2026-08-12", "breakfast"],
+    ["前天晚上 火鍋 800", "2026-08-11", "dinner"],
+    ["昨晚 火鍋 800", "2026-08-12", "dinner"],
+  ] as const)("supports natural day-part aliases in %s", (input, occurredOn, meal) => {
+    expect(parseOk(input)).toMatchObject({
+      occurredOn,
+      occurredAt: null,
+      occurredTime: null,
+      meal: { code: meal, source: "explicit" },
+    });
+  });
+
+  it("supports explicit clock time with spaced or joined relative dates", () => {
+    expect(parseOk("昨天 22:00 宵夜 200")).toMatchObject({
+      occurredOn: "2026-08-12", occurredTime: "22:00", meal: { code: "late_night" },
+    });
+    expect(parseOk("昨天22:00 宵夜 200")).toMatchObject({
+      occurredOn: "2026-08-12", occurredTime: "22:00", meal: { code: "late_night" },
+    });
+  });
+
   it("rejects duplicate and conflicting prefixes", () => {
     expectError("個人 共同 牛肉麵 150", "CONFLICTING_SCOPE");
     expectError("共同 共同 牛肉麵 150", "DUPLICATE_SCOPE");

@@ -15,6 +15,8 @@ describe("parseLedgerCommand", () => {
     ["週報", { kind: "period", period: "week", filter: { kind: "personal" } }],
     ["本週 共同", { kind: "period", period: "week", filter: { kind: "shared" } }],
     ["上週", { kind: "period", period: "last_week", filter: { kind: "personal" } }],
+    ["前天", { kind: "period", period: "day_before_yesterday", filter: { kind: "personal" } }],
+    ["前天 共同", { kind: "period", period: "day_before_yesterday", filter: { kind: "shared" } }],
     ["月報", { kind: "period", period: "month", filter: { kind: "personal" } }],
     ["共同月報", { kind: "period", period: "month", filter: { kind: "shared" } }],
     ["個人月報", { kind: "period", period: "month", filter: { kind: "personal" } }],

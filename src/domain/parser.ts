@@ -10,6 +10,7 @@ import {
 import {
   CATEGORY_BY_DISPLAY_NAME,
   MEAL_BY_DISPLAY_NAME,
+  MEAL_DISPLAY_NAMES,
   RULE_VERSION,
   classifyDescription,
   inferContextTags,
@@ -504,7 +505,7 @@ function parsePrefixes(
   timezone: string,
   defaultScope: ExpenseScope,
 ): LocalResult<PrefixState> {
-  const tokens = body.length === 0 ? [] : body.split(/\s+/u);
+  const tokens = body.length === 0 ? [] : body.split(/\s+/u).flatMap(expandCompoundTimePrefix);
   let cursor = 0;
   let scope: ExpenseScope = defaultScope;
   let scopeSeen = false;
@@ -599,8 +600,8 @@ function parsePrefixes(
       continue;
     }
 
-    const mealCode = MEAL_BY_DISPLAY_NAME[token];
-    if (mealCode !== undefined) {
+    const mealCode = parseMealPrefix(token);
+    if (mealCode !== null) {
       if (mealPrefixSeen) {
         return mealCode === explicitMeal
           ? failure("DUPLICATE_MEAL", "餐別前綴只能出現一次。")
@@ -610,7 +611,7 @@ function parsePrefixes(
             );
       }
       explicitMeal = mealCode;
-      explicitMealDisplay = token;
+      explicitMealDisplay = MEAL_DISPLAY_NAMES[mealCode];
       mealPrefixSeen = true;
       cursor += 1;
       continue;
@@ -680,10 +681,10 @@ function parseScope(token: string): ExpenseScope | null {
 }
 
 function parseRelativeDate(token: string): number | null {
-  if (token === "今天") {
+  if (token === "今天" || token === "今日") {
     return 0;
   }
-  if (token === "昨天") {
+  if (token === "昨天" || token === "昨日") {
     return -1;
   }
   if (token === "前天") {
@@ -696,6 +697,27 @@ function parseRelativeDate(token: string): number | null {
     return 2;
   }
   return null;
+}
+
+function parseMealPrefix(token: string): MealCode | null {
+  const canonical = MEAL_BY_DISPLAY_NAME[token];
+  if (canonical !== undefined) return canonical;
+  if (["早", "早上", "早晨", "上午"].includes(token)) return "breakfast";
+  if (["中", "中午", "午", "正午"].includes(token)) return "lunch";
+  if (["晚", "晚上", "晚間", "傍晚"].includes(token)) return "dinner";
+  return null;
+}
+
+function expandCompoundTimePrefix(token: string): readonly string[] {
+  const dateAndPeriod = /^(今天|今日|昨天|昨日|前天)(早上|早晨|上午|中午|正午|晚上|晚間|傍晚|早|中|午|晚)$/u.exec(token);
+  if (dateAndPeriod) return [dateAndPeriod[1]!, dateAndPeriod[2]!];
+  const dateAndTime = /^(今天|今日|昨天|昨日|前天)(\d{1,2}:\d{2})$/u.exec(token);
+  if (dateAndTime) return [dateAndTime[1]!, dateAndTime[2]!];
+  const short = /^(今早|今午|今晚|昨早|昨午|昨晚)$/u.exec(token)?.[1];
+  if (short !== undefined) {
+    return [short.startsWith("今") ? "今天" : "昨天", short.endsWith("早") ? "早" : short.endsWith("午") ? "中" : "晚"];
+  }
+  return [token];
 }
 
 function normalizeMessage(input: string): string {

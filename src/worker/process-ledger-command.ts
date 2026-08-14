@@ -84,6 +84,7 @@ export async function processLedgerCommand(
       {
       const reply = [
         "記帳：牛肉麵 150 #工作（初始為個人模式）",
+        "日期時間：昨天早上 早餐 80、前天 22:00 宵夜 200",
         "預訂支出：作弊 2026/9/25 香港機+酒 30141",
         "個人：個人 咖啡 80",
         "模式：切換共同模式、切換個人模式、目前模式",
@@ -501,9 +502,10 @@ function periodRange(date: string, period: PeriodSelection): { start: string; en
     const start = `${year.toString().padStart(4, "0")}-${period.month.toString().padStart(2, "0")}-01`;
     return { start, end: shiftMonth(start, 1), title: `${year}/${period.month.toString().padStart(2, "0")}` };
   }
-  if (period === "today" || period === "yesterday") {
-    const start = period === "today" ? date : shiftCalendarDate(date, -1);
-    return { start, end: shiftCalendarDate(start, 1), title: period === "today" ? "今天" : "昨天" };
+  if (period === "today" || period === "yesterday" || period === "day_before_yesterday") {
+    const offset = period === "today" ? 0 : period === "yesterday" ? -1 : -2;
+    const start = shiftCalendarDate(date, offset);
+    return { start, end: shiftCalendarDate(start, 1), title: period === "today" ? "今天" : period === "yesterday" ? "昨天" : "前天" };
   }
   if (period === "week" || period === "last_week") {
     const day = new Date(`${date}T00:00:00Z`).getUTCDay();

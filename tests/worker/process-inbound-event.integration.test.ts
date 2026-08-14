@@ -636,6 +636,20 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     });
   });
 
+  it("records natural relative-day and day-part aliases", async () => {
+    await insertTextEvent("E-natural-time", "M-natural-time", "前天晚上 火鍋 800");
+    await expect(processNextInboundEvent(pool, { generatePublicId: () => "NATRAX88" }))
+      .resolves.toMatchObject({ outcome: "applied", publicId: "NATRAX88" });
+    const expense = await pool.query<{ occurred_on: string; occurred_at: Date | null; meal: string }>(
+      `SELECT e.occurred_on::text,e.occurred_at,t.code AS meal
+         FROM expense_transaction e
+         JOIN transaction_tag tt ON tt.transaction_id=e.id AND tt.tag_type='meal'
+         JOIN tag t ON t.id=tt.tag_id
+        WHERE e.public_id='NATRAX88'`,
+    );
+    expect(expense.rows[0]).toEqual({ occurred_on: "2026-08-11", occurred_at: null, meal: "dinner" });
+  });
+
   it("lets each member set a unique nickname used by later cards and reports", async () => {
     await insertTextEvent("E-nickname", "M-nickname", "設定暱稱 阿明");
     await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });

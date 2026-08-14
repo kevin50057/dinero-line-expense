@@ -20,6 +20,7 @@ export type LedgerCommand =
 export type PeriodSelection =
   | "today"
   | "yesterday"
+  | "day_before_yesterday"
   | "week"
   | "last_week"
   | "month"
@@ -128,12 +129,12 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
     return parseCalendarMonthReport(match[1], match[2]!, match[3]);
   }
 
-  match = /^(今天|今日|昨天|週報|這週|本週|上週|本月|月報|上月)(?: (\S+))?$/u.exec(text);
+  match = /^(今天|今日|昨天|昨日|前天|週報|這週|本週|上週|本月|月報|上月)(?: (\S+))?$/u.exec(text);
   if (match) {
     const filter = parseFilter(match[2]);
     if (filter === null) return invalid("查詢篩選可用：共同、個人或 #標籤。");
     const periodByLabel = {
-      今天: "today", 今日: "today", 昨天: "yesterday",
+      今天: "today", 今日: "today", 昨天: "yesterday", 昨日: "yesterday", 前天: "day_before_yesterday",
       週報: "week", 這週: "week", 本週: "week", 上週: "last_week",
       本月: "month", 月報: "month", 上月: "last_month",
     } as const;
@@ -238,7 +239,10 @@ function parseChange(field: string, raw: string): UpdateChange | string {
   if (field === "餐別") {
     if (raw === "自動") return { field: "meal", value: "auto" };
     if (raw === "無") return { field: "meal", value: "none" };
-    const value = MEAL_BY_DISPLAY_NAME[raw];
+    const value = MEAL_BY_DISPLAY_NAME[raw]
+      ?? (["早", "早上", "早晨", "上午"].includes(raw) ? "breakfast" : undefined)
+      ?? (["中", "中午", "午", "正午"].includes(raw) ? "lunch" : undefined)
+      ?? (["晚", "晚上", "晚間", "傍晚"].includes(raw) ? "dinner" : undefined);
     if (value === undefined) return "可用餐別：早餐、午餐、下午茶、晚餐、宵夜、自動或無。";
     return { field: "meal", value };
   }
