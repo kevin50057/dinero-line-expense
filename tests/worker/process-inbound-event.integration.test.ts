@@ -650,6 +650,36 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     expect(expense.rows[0]).toEqual({ occurred_on: "2026-08-11", occurred_at: null, meal: "dinner" });
   });
 
+  it("separates the creator from the payer and offers a one-tap payer toggle", async () => {
+    await insertTextEvent("E-payer-create", "M-payer-create", "共同 2026/6/15 香港飯店 620");
+    await expect(processNextInboundEvent(pool, { generatePublicId: () => "PAYSWAP2" }))
+      .resolves.toMatchObject({ outcome: "applied", publicId: "PAYSWAP2" });
+
+    await insertTextEvent("E-payer-swap", "M-payer-swap", "改 #PAYSWAP2 付款人 對方");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
+    const state = await pool.query<{ creator: string; payer: string }>(
+      `SELECT creator.line_user_id AS creator,payer.line_user_id AS payer
+         FROM expense_transaction e
+         JOIN member creator ON creator.id=e.created_by_member_id
+         JOIN member payer ON payer.id=e.payer_member_id
+        WHERE e.public_id='PAYSWAP2'`,
+    );
+    expect(state.rows[0]).toEqual({ creator: "U-ming", payer: "U-mei" });
+
+    const detail = await pool.query<{ payload: unknown }>(
+      "SELECT payload_json AS payload FROM outbox_message WHERE source_webhook_event_id='E-payer-swap'",
+    );
+    expect(JSON.stringify(detail.rows[0]?.payload)).toContain('"label":"我付款"');
+
+    await insertTextEvent("E-payer-report", "M-payer-report", "共同6月月報");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
+    const report = await pool.query<{ alt_text: string }>(
+      "SELECT payload_json->'messages'->0->>'altText' AS alt_text FROM outbox_message WHERE source_webhook_event_id='E-payer-report'",
+    );
+    expect(report.rows[0]?.alt_text).toContain("共同記帳人：小明 620 元");
+    expect(report.rows[0]?.alt_text).toContain("共同付款人：小美 620 元");
+  });
+
   it("lets each member set a unique nickname used by later cards and reports", async () => {
     await insertTextEvent("E-nickname", "M-nickname", "設定暱稱 阿明");
     await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });

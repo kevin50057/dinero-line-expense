@@ -89,6 +89,7 @@ export async function processLedgerCommand(
         "個人：個人 咖啡 80",
         "模式：切換共同模式、切換個人模式、目前模式",
         "暱稱：設定暱稱 小美、我的暱稱",
+        "付款人：共同交易卡片可切換，或輸入改 #編號 付款人 對方",
         "查詢：最近、今天、週報、共同月報、7月月報、找 關鍵字、分類排行",
         "修改：最近 5 → 點每筆右側的編輯",
         "標籤：改 #編號 標籤 #約會 #台南",
@@ -299,11 +300,15 @@ async function queryDetail(client: PoolClient, actor: CommandActor, publicId: st
   ].join("\n");
   const canMutate = expense.scope === "shared" || expense.personal_owner_member_id === actor.memberId;
   const editActions = expense.status === "active" && canMutate
-    ? [
+      ? [
         { label: "改名稱", data: `ui=edit_name&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 項目 ${expense.description}` },
         { label: "改金額", data: `ui=edit_amount&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 金額 ${expense.amount_minor}` },
         { label: "改分類", data: `ui=edit_category&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 分類 ${expense.category_name}` },
         { label: "改標籤", data: `ui=edit_tags&id=${expense.public_id}`, fillInText: `改 #${expense.public_id} 標籤 ${tags.map((name) => `#${name}`).join(" ")}` },
+        ...(expense.scope === "shared" ? [{
+          label: expense.payer_member_id === actor.memberId ? "對方付款" : "我付款",
+          text: `改 #${expense.public_id} 付款人 ${expense.payer_member_id === actor.memberId ? "對方" : "我"}`,
+        }] : []),
         { label: "取消這筆", text: `取消 #${expense.public_id}` },
       ]
     : expense.status === "voided" && canMutate
@@ -403,6 +408,7 @@ async function queryPeriod(
   const scopeTotals = await periodScopeTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
   const memberTotals = await periodMemberTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
   const sharedCreatorTotals = await periodSharedCreatorTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
+  const sharedPayerTotals = await periodSharedPayerTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
   const categoryTotals = await periodCategoryTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
   const showShared = command.filter.kind !== "personal";
   const showPersonal = command.filter.kind !== "shared";
@@ -411,6 +417,9 @@ async function queryPeriod(
     ...(showShared ? [`共同：${money(scopeTotals.shared)}`] : []),
     ...(showShared && sharedCreatorTotals.length > 0
       ? [`共同記帳人：${sharedCreatorTotals.map((row) => `${row.name} ${money(row.total)}`).join("・")}`]
+      : []),
+    ...(showShared && sharedPayerTotals.length > 0
+      ? [`共同付款人：${sharedPayerTotals.map((row) => `${row.name} ${money(row.total)}`).join("・")}`]
       : []),
     ...(showPersonal ? memberTotals.map((row) => `${row.name}個人：${money(row.total)}`) : []),
     `分類：${categoryTotals.length === 0 ? "無" : categoryTotals.map((row) => `${row.name} ${money(row.total)}`).join("・")}`,
@@ -427,6 +436,10 @@ async function queryPeriod(
       ...(showShared && sharedCreatorTotals.length > 0 ? [{
         label: "共同支出・依記帳人",
         value: sharedCreatorTotals.map((row) => `${row.name} ${money(row.total)}`).join("・"),
+      }] : []),
+      ...(showShared && sharedPayerTotals.length > 0 ? [{
+        label: "共同支出・依付款人",
+        value: sharedPayerTotals.map((row) => `${row.name} ${money(row.total)}`).join("・"),
       }] : []),
       ...(showPersonal ? memberTotals.map((row) => ({ label: `${row.name}的個人支出`, value: money(row.total) })) : []),
       { label: "分類分布", value: categoryTotals.length === 0 ? "無" : categoryTotals.map((row) => `${row.name} ${money(row.total)}`).join("・") },
@@ -565,6 +578,20 @@ async function periodSharedCreatorTotals(client: PoolClient, ledgerId: string, s
     `SELECT m.display_name AS name, sum(et.amount_minor)::text AS total
        FROM expense_transaction et
        JOIN member m ON m.ledger_id=et.ledger_id AND m.id=et.created_by_member_id
+      WHERE et.ledger_id=$1 AND et.status='active' AND et.scope='shared'
+        AND et.occurred_on >= $2::date AND et.occurred_on < $3::date${filterSql}
+      GROUP BY m.id,m.display_name,m.created_at
+      ORDER BY sum(et.amount_minor) DESC,m.created_at,m.id`,
+    [ledgerId, start, end, ...extra],
+  );
+  return result.rows;
+}
+
+async function periodSharedPayerTotals(client: PoolClient, ledgerId: string, start: string, end: string, filterSql: string, extra: readonly unknown[]) {
+  const result = await client.query<{ name: string; total: string }>(
+    `SELECT m.display_name AS name, sum(et.amount_minor)::text AS total
+       FROM expense_transaction et
+       JOIN member m ON m.ledger_id=et.ledger_id AND m.id=et.payer_member_id
       WHERE et.ledger_id=$1 AND et.status='active' AND et.scope='shared'
         AND et.occurred_on >= $2::date AND et.occurred_on < $3::date${filterSql}
       GROUP BY m.id,m.display_name,m.created_at
@@ -781,7 +808,7 @@ async function updateScope(client: PoolClient, actor: CommandActor, event: Comma
 
 async function updateMemberField(client: PoolClient, actor: CommandActor, event: CommandEvent, expense: ExpenseRow, field: "payer" | "owner", name: string) {
   if (field === "owner" && expense.scope !== "personal") return rejected("只有個人支出可以設定所有人。", expense.public_id);
-  const member = await resolveMember(client, actor.ledgerId, name);
+  const member = await resolveMemberReference(client, actor, name);
   if (member === null) return rejected("找不到唯一符合的帳本成員。", expense.public_id);
   const oldId = field === "payer" ? expense.payer_member_id : expense.personal_owner_member_id;
   const oldName = field === "payer" ? expense.payer_name : expense.owner_name;
@@ -1027,6 +1054,30 @@ async function resolveMember(client: PoolClient, ledgerId: string, name: string)
     [ledgerId, name],
   );
   return result.rows.length === 1 ? result.rows[0]! : null;
+}
+
+async function resolveMemberReference(
+  client: PoolClient,
+  actor: CommandActor,
+  reference: string,
+): Promise<{ id: string; name: string } | null> {
+  const normalized = reference.normalize("NFKC").trim();
+  if (["我", "自己", "本人"].includes(normalized)) {
+    const result = await client.query<{ id: string; name: string }>(
+      "SELECT id::text,display_name AS name FROM member WHERE ledger_id=$1 AND id=$2 AND is_active",
+      [actor.ledgerId, actor.memberId],
+    );
+    return result.rows[0] ?? null;
+  }
+  if (["對方", "另一位", "另一半"].includes(normalized)) {
+    const result = await client.query<{ id: string; name: string }>(
+      `SELECT id::text,display_name AS name FROM member
+        WHERE ledger_id=$1 AND id<>$2 AND is_active ORDER BY created_at,id LIMIT 2`,
+      [actor.ledgerId, actor.memberId],
+    );
+    return result.rows.length === 1 ? result.rows[0]! : null;
+  }
+  return resolveMember(client, actor.ledgerId, normalized);
 }
 
 async function updateColumn(client: PoolClient, ledgerId: string, transactionId: string, column: "amount_minor" | "description" | "payer_member_id" | "personal_owner_member_id", value: string | number) {

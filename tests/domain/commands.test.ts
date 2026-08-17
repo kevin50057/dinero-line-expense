@@ -41,6 +41,8 @@ describe("parseLedgerCommand", () => {
     ["取消 #K7M2Q9TX", { kind: "void", publicId: "K7M2Q9TX" }],
     ["還原 #K7M2Q9TX", { kind: "restore", publicId: "K7M2Q9TX" }],
     ["改 #K7M2Q9TX 金額 180", { kind: "update", publicId: "K7M2Q9TX", change: { field: "amount", value: 180 } }],
+    ["改 #K7M2Q9TX 付款人 對方", { kind: "update", publicId: "K7M2Q9TX", change: { field: "payer", value: "對方" } }],
+    ["改 #K7M2Q9TX 付款人 我", { kind: "update", publicId: "K7M2Q9TX", change: { field: "payer", value: "我" } }],
     ["改 #K7M2Q9TX 標籤 #約會 #台南", { kind: "update", publicId: "K7M2Q9TX", change: { field: "tags", value: ["約會", "台南"] } }],
     ["改 #K7M2Q9TX 標籤 無", { kind: "update", publicId: "K7M2Q9TX", change: { field: "tags", value: [] } }],
     ["分類規則", { kind: "category_rules" }],
