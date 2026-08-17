@@ -1129,7 +1129,7 @@ And 每筆多標籤交易在總額中只計算一次
 
 ```gherkin
 When 已授權成員傳送「說明」
-Then LINE 回覆為最多三張 bubble 的 carousel Flex Message
+Then LINE 回覆為最多五張 bubble 的 carousel Flex Message
 And 卡片包含可點擊的 message action 常用指令
 
 When 已授權成員查詢單筆、最近、期間、搜尋或排行
@@ -1137,16 +1137,26 @@ Then LINE 回覆為 Flex bubble 且 altText 包含等價純文字摘要
 And outbound validator 拒絕未知元件、未知欄位、任意 URI action、超過 12 張 bubble 或超過 50 KB 的 Flex JSON
 ```
 
-### A85 — 第二位成員可用精確指令安全配對
+### A85 — 新群組可自助建立隔離帳本並安全配對
 
 ```gherkin
-Given 允許的純記帳群組已有且只有一位 active member
-And 另一位群組成員尚未授權
-When 她傳送完全等於「配對」的文字訊息
-Then admission boundary 暫存該事件的 user ID、加密 reply token 與固定文字「配對」
+Given public signup 已開啟且 Bot 加入一個尚無 ledger 的 LINE 群組
+When 收到 join 或 onboarding 指令
+Then 系統 idempotently 建立該群組專屬 ledger 與完整 system tags
+And 不使用其他群組的 member、交易或自訂標籤
+
+Given 新 ledger 尚無 active member
+When 第一位傳送「建立配對」或「開始配對」
+Then worker 鎖定 ledger 並建立第一位 member
+And 回覆請第二位在同一群組傳送「配對」
+
+Given ledger 已有且只有一位 active member
+When 第二位傳送完全等於「配對」的文字訊息
+Then admission boundary 暫存該事件的 user ID、加密 reply token 與固定 onboarding 文字
 And worker 鎖定 ledger、再次確認 active member 數為一後建立第二位 member
 And 回覆配對成功並立即清除 inbound payload
 And 她下一則一般記帳訊息可由 DB active member 身份通過授權
+And 她的私訊依全域唯一 active member 身份路由回同一 ledger
 
 When 已完成配對的成員再次傳送「配對」
 Then 不新增 member 且只回覆已完成配對
@@ -1155,7 +1165,11 @@ Given 帳本已有兩位 active member
 When 第三位群組成員傳送「配對」
 Then 不建立 member 且回覆帳本無法接受新成員
 
-When 未授權成員傳送任何不是完全匹配「配對」的訊息
+Given 某 LINE 帳號已在另一個 ledger 有 active member 身份
+When 該帳號嘗試加入新配對
+Then 不建立第二個 active 身份且回覆必須先解除原配對
+
+When 未授權成員傳送任何不是配對或說明 allowlist 的訊息
 Then 不保存 user ID、訊息文字或 reply token
 ```
 

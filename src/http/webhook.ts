@@ -18,6 +18,7 @@ export interface WebhookDependencies {
   channelSecret: string;
   allowedGroupId: string;
   allowedMemberUserIds: ReadonlySet<string>;
+  publicSignupEnabled?: boolean;
   inbox: LineEventInbox;
 }
 
@@ -48,6 +49,7 @@ export async function handleLineWebhook(
     authorization: authorizeLineEvent(event, {
       allowedGroupIds: new Set([dependencies.allowedGroupId]),
       allowedMemberUserIds: dependencies.allowedMemberUserIds,
+      allowUnlistedGroups: dependencies.publicSignupEnabled ?? false,
     }),
   }));
 

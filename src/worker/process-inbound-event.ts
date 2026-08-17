@@ -6,6 +6,7 @@ import {
   lineTextReply,
 } from "../application/expense-reply.js";
 import { generatePublicId } from "../application/public-id.js";
+import { pairingGuideCard } from "../application/line-cards.js";
 import { inferMeal, parseExpenseMessage, parseLedgerCommand } from "../domain/index.js";
 import type { ParsedExpense, TypedTag } from "../domain/index.js";
 import type { LineReplyMessage } from "../outbox/payload.js";
@@ -133,20 +134,21 @@ async function processLifecycleEvent(
   const destination = ledger.rows[0]?.line_group_id ?? null;
 
   if (payload.event.kind === "join") {
+    const reply = [
+      "歡迎使用 DINERO 兩人記帳！",
+      "第一位請輸入「建立配對」，第二位再輸入「配對」。",
+      "完成後輸入「設定暱稱 你的名字」。",
+      "預設是個人模式；約會時再輸入「切換共同模式」。",
+      "傳送「使用說明」可查看完整功能。",
+    ].join("\n");
     await enqueueReply(
       client,
       event,
       destination,
       payload.replyTokenCiphertext,
       "ledger_onboarding",
-      [
-        "歡迎使用兩人記帳！",
-        "初始是個人模式，直接輸入「牛肉麵 150」會記在自己的個人支出。",
-        "約會時輸入「切換共同模式」，結束後可「切換個人模式」。",
-        "單筆也可明確寫「共同 晚餐 800」或「個人 咖啡 80」。",
-        "可加標籤，例如「牛肉麵 150 #約會」。",
-        "傳送「說明」查看查詢、修改、取消與還原指令。",
-      ].join("\n"),
+      reply,
+      pairingGuideCard(reply),
     );
     await finish(client, event, "applied");
     return processedResult(event, "applied");
@@ -269,16 +271,19 @@ async function processMessage(
 
   const identity = await loadIdentity(client, event.ledger_id, payload.source.userId);
   if (identity === null) {
-    if (payload.message.text.normalize("NFKC").trim() === "配對") {
+    const normalizedText = payload.message.text.normalize("NFKC").trim();
+    if (isPairingCommand(normalizedText)) {
       return pairLedgerMember(client, event, payload.source.userId, payload.replyTokenCiphertext);
     }
-    await enqueueReply(client, event, null, payload.replyTokenCiphertext,
-      "expense_create_rejected", "這位使用者目前無法在此帳本記帳。");
+    const destination = await loadLedgerDestination(client, event.ledger_id);
+    const reply = "你還沒完成配對。第一位請輸入「建立配對」，第二位輸入「配對」。";
+    await enqueueReply(client, event, destination, payload.replyTokenCiphertext,
+      "ledger_onboarding", reply, pairingGuideCard(reply));
     await finish(client, event, "rejected");
     return processedResult(event, "rejected");
   }
 
-  if (payload.message.text.normalize("NFKC").trim() === "配對") {
+  if (isPairingCommand(payload.message.text.normalize("NFKC").trim())) {
     await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
       "member_pairing_result", `你已經完成配對，帳本身份是「${identity.display_name}」。`);
     await finish(client, event, "noop");
@@ -459,16 +464,29 @@ async function pairLedgerMember(
     "SELECT count(*)::text AS count FROM member WHERE ledger_id=$1 AND is_active",
     [event.ledger_id],
   );
-  if (Number(members.rows[0]?.count ?? 0) !== 1) {
+  const memberCount = Number(members.rows[0]?.count ?? 0);
+  if (memberCount >= 2) {
     await enqueueReply(client, event, destination, replyTokenCiphertext,
       "member_pairing_result", "這個帳本目前無法接受新的配對成員。若要更換成員，請由帳本管理者處理。");
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+  const existing = await client.query<{ line_group_id: string }>(
+    `SELECT l.line_group_id
+       FROM member m JOIN ledger l ON l.id=m.ledger_id
+      WHERE m.line_user_id=$1 AND m.is_active`,
+    [lineUserId],
+  );
+  if (existing.rowCount !== 0) {
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", "這個 LINE 帳號已經在另一組有效配對中，不能同時加入兩本帳。解除原配對後才能重新加入。");
     await finish(client, event, "rejected");
     return processedResult(event, "rejected");
   }
   const inserted = await client.query(
     `INSERT INTO member (ledger_id,line_user_id,display_name,command_alias)
      VALUES ($1,$2,'新成員',NULL)
-     ON CONFLICT (ledger_id,line_user_id) DO NOTHING`,
+     ON CONFLICT DO NOTHING`,
     [event.ledger_id, lineUserId],
   );
   if (inserted.rowCount !== 1) {
@@ -477,11 +495,25 @@ async function pairLedgerMember(
     await finish(client, event, "rejected");
     return processedResult(event, "rejected");
   }
+  const reply = memberCount === 0
+    ? "已建立配對！你是第一位成員。請先輸入「設定暱稱 你的名字」，再請另一位在這個群組輸入「配對」。"
+    : "配對成功！兩人帳本已可使用。請輸入「設定暱稱 你的名字」；之後可直接輸入「牛肉麵 150」記個人帳，約會時再切換共同模式。";
   await enqueueReply(client, event, destination, replyTokenCiphertext,
-    "member_pairing_result",
-    "配對成功！請先輸入「設定暱稱 你的名字」，例如「設定暱稱 小美」。之後就可以直接輸入「牛肉麵 150」記帳。");
+    "member_pairing_result", reply);
   await finish(client, event, "applied");
   return processedResult(event, "applied");
+}
+
+function isPairingCommand(text: string): boolean {
+  return text === "配對" || text === "建立配對" || text === "開始配對";
+}
+
+async function loadLedgerDestination(client: PoolClient, ledgerId: string): Promise<string | null> {
+  const result = await client.query<{ line_group_id: string }>(
+    "SELECT line_group_id FROM ledger WHERE id=$1",
+    [ledgerId],
+  );
+  return result.rows[0]?.line_group_id ?? null;
 }
 
 async function loadIdentity(

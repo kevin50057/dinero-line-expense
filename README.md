@@ -2,9 +2,10 @@
 
 這個專案採 Specification-Driven Development（SDD）：先定義帳務語意、對話格式、資料約束與驗收案例，再開始實作。目前已完成可執行的交易 CRUD、LINE 原生編輯提示、join onboarding 與 unsend 隱私清除流程。
 
-## 目前的 MVP 草案
+## 目前功能
 
-- 群組是純記帳群，`牛肉麵 150` 直接建立一筆共同支出。
+- 每個 LINE 群組可自助建立一個資料隔離的兩人帳本；第一位輸入 `建立配對`，第二位輸入 `配對`。
+- 預設是個人模式，`牛肉麵 150` 會建立傳送者的個人支出；約會時可切換共同模式。
 - `個人 咖啡 80` 建立傳送者的個人支出；群組內兩人都看得到，只有所有人能修改或取消。
 - 一筆帳可以同時有多種標籤：一個大分類、最多一個餐別，以及多個自訂標籤。
 - `牛肉麵 150 #約會` 可得到 `食物・午餐（自動）・約會`。
@@ -15,6 +16,7 @@
 
 ## 文件
 
+- [完整使用說明](docs/USER_GUIDE.md)
 - [產品規格](specs/001-line-expense-bot/spec.md)
 - [資料模型](specs/001-line-expense-bot/data-model.md)
 - [驗收案例](specs/001-line-expense-bot/acceptance.md)
@@ -45,8 +47,10 @@ LINE：直接編輯原始記帳訊息
   → 不修改帳務，也不保存編輯後文字
   → 回覆應使用的「改 #編號 欄位 新值」格式
 
-LINE：Bot 加入允許的記帳群組
-  → 說明共同、個人與自訂標籤的第一步用法
+LINE：Bot 加入新的記帳群組
+  → 自動建立獨立帳本
+  → 第一位「建立配對」，第二位「配對」
+  → 配對後兩人可在群組或私訊記帳
 ```
 
 規格目前標記為 Draft v2，預期會在兩人實際試用後繼續調整。
@@ -84,7 +88,7 @@ npm run web:build
 
 1. 依 [.env.example](.env.example) 建立環境變數；`OUTBOX_CREDENTIAL_KEY_BASE64` 可用 `openssl rand -base64 32` 產生。
 2. `npm run db:migrate` 建 schema。
-3. 依 [db/README.md](db/README.md) seed 指定群組、成員與固定標籤；可先以 1 位成員試用，之後再加入第 2 位。
+3. 單一測試帳本可依 [db/README.md](db/README.md) seed；若設定 `LINE_PUBLIC_SIGNUP_ENABLED=true`，新群組會自動建立獨立帳本，不需逐組 seed。
 4. `npm run dev` 啟動服務，把 LINE webhook 指向 HTTPS 的 `/webhooks/line`。
 
 服務會驗證 raw webhook 簽章，以 transactional inbox 去重，背景執行新增、查詢、修改、取消、還原與 audit，再透過 outbox 回覆 LINE。`/healthz` 是程序存活，`/readyz` 會檢查 PostgreSQL。

@@ -62,7 +62,7 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   // natural variants such as `查 6 月 月報` remain equivalent to `6月月報`.
   const reportText = text.startsWith("查") ? text.slice(1).trim() : text;
   const compactReportText = reportText.replace(/\s+/gu, "");
-  if (text === "說明" || text === "幫助" || text === "help") return command({ kind: "help" });
+  if (["說明", "使用說明", "完整說明", "配對說明", "幫助", "help"].includes(text)) return command({ kind: "help" });
   if (text === "分類") return command({ kind: "categories" });
   if (text === "分類規則" || text === "分類知識表") return command({ kind: "category_rules" });
   if (text === "標籤") return command({ kind: "tags_help" });
@@ -193,7 +193,7 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   // 今天／昨天 are also valid create prefixes (for example
   // 「昨天 牛肉麵 150」), so only their fully matched query forms above are
   // commands. Other reserved verbs must never fall through to create.
-  if (/^(?:查|最近|找|搜尋|排行|分類排行|目前模式|切換共同模式|切換個人模式|共同模式|個人模式|我的暱稱|目前暱稱|設定暱稱|修改暱稱|切換|今日|週報|這週|本週|上週|本月|月報|上月|改|加|移除|取消|還原|說明|幫助|help|分類|標籤|新增分類|刪除分類)(?:\s|$)/iu.test(text) || /^(?:(?:共同|個人|全部)\s*)?(?:\d{4}年)?\d{1,2}月(?:共同|個人|全部)?月報/u.test(text)) {
+  if (/^(?:查|最近|找|搜尋|排行|分類排行|目前模式|切換共同模式|切換個人模式|共同模式|個人模式|我的暱稱|目前暱稱|設定暱稱|修改暱稱|切換|今日|週報|這週|本週|上週|本月|月報|上月|改|加|移除|取消|還原|說明|使用說明|完整說明|配對說明|幫助|help|分類|標籤|新增分類|刪除分類)(?:\s|$)/iu.test(text) || /^(?:(?:共同|個人|全部)\s*)?(?:\d{4}年)?\d{1,2}月(?:共同|個人|全部)?月報/u.test(text)) {
     if (/^(?:新增分類|刪除分類)(?:\s|$)/u.test(text)) {
       return invalid("目前分類是固定清單，不支援新增或刪除分類。");
     }

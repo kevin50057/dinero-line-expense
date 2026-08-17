@@ -12,6 +12,7 @@ export interface HttpServerDependencies {
   channelSecret: string;
   allowedGroupId: string;
   allowedMemberUserIds: ReadonlySet<string>;
+  publicSignupEnabled?: boolean;
   inbox: LineEventInbox;
   healthCheck?: () => Promise<void>;
 }

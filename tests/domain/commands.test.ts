@@ -53,6 +53,8 @@ describe("parseLedgerCommand", () => {
     ["設定暱稱 小美", { kind: "nickname", value: "小美" }],
     ["修改暱稱 Mei Lin", { kind: "nickname", value: "Mei Lin" }],
     ["幫助", { kind: "help" }],
+    ["使用說明", { kind: "help" }],
+    ["配對說明", { kind: "help" }],
     ["取消 #K7M2Q9TX", { kind: "void", publicId: "K7M2Q9TX" }],
     ["還原 #K7M2Q9TX", { kind: "restore", publicId: "K7M2Q9TX" }],
     ["改 #K7M2Q9TX 金額 180", { kind: "update", publicId: "K7M2Q9TX", change: { field: "amount", value: 180 } }],

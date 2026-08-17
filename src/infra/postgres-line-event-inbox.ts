@@ -11,7 +11,6 @@ export type EncryptDeliveryCredential = (
 
 export interface PostgresLineEventInboxOptions {
   encryptDeliveryCredential: EncryptDeliveryCredential;
-  privateLedgerGroupId: string;
 }
 
 export class LineInboxLedgerNotFoundError extends Error {
@@ -82,12 +81,10 @@ interface InboxInsert {
 export class PostgresLineEventInbox implements LineEventInbox {
   readonly #pool: Pool;
   readonly #encryptDeliveryCredential: EncryptDeliveryCredential;
-  readonly #privateLedgerGroupId: string;
 
   constructor(pool: Pool, options: PostgresLineEventInboxOptions) {
     this.#pool = pool;
     this.#encryptDeliveryCredential = options.encryptDeliveryCredential;
-    this.#privateLedgerGroupId = options.privateLedgerGroupId;
   }
 
   async acceptBatch(
@@ -123,17 +120,15 @@ export class PostgresLineEventInbox implements LineEventInbox {
         let ledgerId = ledgerIdsBySource.get(sourceKey);
         if (ledgerId === undefined) {
           if (source.type === "user" && source.userId !== undefined) {
-            ledgerId = await resolvePrivateLedgerId(
-              client,
-              this.#privateLedgerGroupId,
-              source.userId,
-            );
+            const privateLedgerId = await resolvePrivateLedgerId(client, source.userId);
+            if (privateLedgerId === null) continue;
+            ledgerId = privateLedgerId;
           } else {
             const groupId = source.groupId;
             if (groupId === undefined || groupId.length === 0) {
               throw new InvalidLineInboxEventError("group_id_missing");
             }
-            ledgerId = await resolveLedgerId(client, groupId);
+            ledgerId = await resolveOrProvisionLedgerId(client, groupId);
           }
           ledgerIdsBySource.set(sourceKey, ledgerId);
         }
@@ -171,9 +166,9 @@ export class PostgresLineEventInbox implements LineEventInbox {
     const databaseMember = !authorization.authorized && authorization.reason === "member_not_allowed"
       ? await isActiveLedgerMember(client, ledgerId, event.source.userId)
       : false;
-    const pairingRequest = !authorization.authorized && authorization.reason === "member_not_allowed"
-      && isPairingRequest(event);
-    const unauthorized = !authorization.authorized && !databaseMember && !pairingRequest;
+    const onboardingRequest = !authorization.authorized && authorization.reason === "member_not_allowed"
+      && isOnboardingRequest(event);
+    const unauthorized = !authorization.authorized && !databaseMember && !onboardingRequest;
     const passivePostback = event.kind === "postback";
     const payload = unauthorized || passivePostback
       ? null
@@ -260,10 +255,11 @@ async function isActiveLedgerMember(client: PoolClient, ledgerId: string, lineUs
   return result.rowCount === 1;
 }
 
-function isPairingRequest(event: AcceptedLineEvent["event"]): boolean {
+function isOnboardingRequest(event: AcceptedLineEvent["event"]): boolean {
   return event.kind === "message" && event.message?.type === "text"
     && typeof event.message.text === "string"
-    && event.message.text.normalize("NFKC").trim() === "配對"
+    && ["配對", "建立配對", "開始配對", "說明", "使用說明", "配對說明"]
+      .includes(event.message.text.normalize("NFKC").trim())
     && event.source.userId !== undefined;
 }
 
@@ -273,7 +269,6 @@ function isUnroutableUnauthorizedEvent(event: AcceptedLineEvent): boolean {
   }
 
   return (
-    event.event.source.type === "user" ||
     event.authorization.reason === "source_not_group" ||
     event.authorization.reason === "group_id_missing" ||
     event.authorization.reason === "group_not_allowed"
@@ -282,33 +277,36 @@ function isUnroutableUnauthorizedEvent(event: AcceptedLineEvent): boolean {
 
 async function resolvePrivateLedgerId(
   client: PoolClient,
-  groupId: string,
   lineUserId: string,
-): Promise<string> {
+): Promise<string | null> {
   const result = await client.query<{ id: string }>(
     `SELECT l.id::text AS id
        FROM ledger l
        JOIN member m ON m.ledger_id = l.id
-      WHERE l.line_group_id = $1
-        AND m.line_user_id = $2
+      WHERE m.line_user_id = $1
         AND m.is_active`,
-    [groupId, lineUserId],
+    [lineUserId],
   );
   const ledgerId = result.rows[0]?.id;
   if (result.rowCount !== 1 || ledgerId === undefined) {
-    throw new LineInboxLedgerNotFoundError();
+    return null;
   }
   return ledgerId;
 }
 
-async function resolveLedgerId(
+async function resolveOrProvisionLedgerId(
   client: PoolClient,
   groupId: string,
 ): Promise<string> {
+  const existing = await client.query<{ id: string }>(
+    "SELECT id::text AS id FROM ledger WHERE line_group_id=$1",
+    [groupId],
+  );
+  const existingId = existing.rows[0]?.id;
+  if (existingId !== undefined) return existingId;
+
   const result = await client.query<{ id: string }>(
-    `SELECT id::text AS id
-       FROM ledger
-      WHERE line_group_id = $1`,
+    "SELECT provision_line_group_ledger($1)::text AS id",
     [groupId],
   );
 

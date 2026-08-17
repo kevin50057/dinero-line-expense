@@ -97,6 +97,18 @@ describe("authorizeLineEvent", () => {
     }
   });
 
+  it("can route an unlisted group to database-backed public onboarding", () => {
+    expect(authorizeLineEvent(
+      event("join", { type: "group", groupId: "C-new" }),
+      { ...policy, allowUnlistedGroups: true },
+    )).toEqual({ authorized: true });
+
+    expect(authorizeLineEvent(
+      event("message", { type: "group", groupId: "C-new", userId: "U-stranger" }),
+      { ...policy, allowUnlistedGroups: true },
+    )).toEqual({ authorized: false, reason: "member_not_allowed" });
+  });
+
   it("allows an authorized member in a one-to-one chat", () => {
     expect(
       authorizeLineEvent(

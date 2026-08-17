@@ -42,6 +42,17 @@ Seed 會明確設定：
 - 5 個 meal：早餐、午餐、下午茶、晚餐、宵夜。
 - 1 個 system context tag：原生家庭；只有規則引擎可建立 inferred assignment。
 
+## 公開配對與多帳本
+
+`008_public_pairing_provisioning.sql` 提供公開 onboarding 所需的資料約束與 provisioning function：
+
+- 每個 LINE 群組以 `line_group_id` 對應一個獨立 ledger。
+- `provision_line_group_ledger(group_id)` 會以 idempotent 方式建立 ledger 與 14 個系統標籤。
+- 同一個 `line_user_id` 同時只能有一個 active member 身份，讓一對一私訊可安全路由到唯一帳本。
+- 設定 `LINE_PUBLIC_SIGNUP_ENABLED=true` 後，未列在啟動白名單的新群組也能進入資料庫 onboarding；未配對使用者的任意訊息不會保存，只有配對與說明指令會進入 inbox。
+
+公開模式不需要為每組使用者執行 seed；seed 保留給單帳本開發、測試或既有資料初始化。
+
 ## 分類知識表
 
 `004_category_knowledge.sql` 建立 `category_knowledge_rule`，並載入台灣常見消費的系統規則。分類時依序採用帳本專屬精確規則、系統 exact／contains 規則，再回退到程式內的保守分類器。每次命中會更新 `hit_count` 與 `last_matched_at`。

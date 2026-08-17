@@ -10,6 +10,8 @@ const environmentSchema = z.object({
   LINE_CHANNEL_ACCESS_TOKEN: z.string().min(1),
   LINE_GROUP_ID: z.string().min(1),
   LINE_MEMBER_USER_IDS: z.string().min(1),
+  LINE_PUBLIC_SIGNUP_ENABLED: z.enum(["true", "false"]).default("false")
+    .transform((value) => value === "true"),
   LEDGER_TIMEZONE: z.string().default("Asia/Taipei"),
   OUTBOX_CREDENTIAL_KEY_BASE64: z.string().min(1),
   DELETION_JOURNAL_DIRECTORY: z.string().min(1),
@@ -24,6 +26,7 @@ export interface AppConfig {
     channelAccessToken: string;
     groupId: string;
     memberUserIds: ReadonlySet<string>;
+    publicSignupEnabled: boolean;
   };
   ledgerTimezone: string;
   outboxCredentialKey: Buffer;
@@ -53,6 +56,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
       channelAccessToken: parsed.LINE_CHANNEL_ACCESS_TOKEN,
       groupId: parsed.LINE_GROUP_ID,
       memberUserIds,
+      publicSignupEnabled: parsed.LINE_PUBLIC_SIGNUP_ENABLED,
     },
     ledgerTimezone: parsed.LEDGER_TIMEZONE,
     outboxCredentialKey: decodeCredentialKey(

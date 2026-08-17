@@ -55,35 +55,64 @@ export function helpCards(altText: string): LineReplyFlexMessage {
     type: "carousel",
     contents: [
       bubble(
+        header("DINERO 配對開始", "兩個人，一本帳"),
+        body([
+          rowBox({ label: "第 1 步", value: "建立兩人 LINE 群組並加入機器人" }),
+          separator("md"),
+          rowBox({ label: "第 2 步", value: "第一人傳送「建立配對」" }),
+          separator("md"),
+          rowBox({ label: "第 3 步", value: "第二人傳送「配對」" }),
+          separator("md"),
+          rowBox({ label: "設定名字", value: "設定暱稱 小美" }),
+        ]),
+        footer([{ label: "建立配對", text: "建立配對" }, { label: "配對狀態", text: "配對" }]),
+      ),
+      bubble(
         header("DINERO 快速開始", "一句話就能記帳"),
         body([
           text("牛肉麵 150 #約會", { size: "lg", weight: "bold", color: INK, wrap: true }),
-          text("初始為個人模式；約會時可一鍵切換共同模式。傳送時段也會協助判斷餐別。", { size: "sm", color: MUTED, wrap: true, margin: "md" }),
+          text("預設記在傳送者個人帳；日期、時段和標籤都可以直接寫在同一句。", { size: "sm", color: MUTED, wrap: true, margin: "md" }),
           separator("lg"),
-          rowBox({ label: "個人支出", value: "個人 咖啡 80" }),
+          rowBox({ label: "補登日期", value: "昨天早上 早餐 80" }),
+          rowBox({ label: "指定時間", value: "前天 22:00 宵夜 200" }),
           rowBox({ label: "指定分類", value: "電影 320 #娛樂" }),
         ]),
         footer([{ label: "最近紀錄", text: "最近 5" }, { label: "本月報表", text: "本月" }]),
       ),
       bubble(
+        header("個人與共同", "約會才切共同模式"),
+        body([
+          rowBox({ label: "查看模式", value: "目前模式" }),
+          separator("md"),
+          rowBox({ label: "開始約會", value: "切換共同模式" }),
+          separator("md"),
+          rowBox({ label: "回到個人", value: "切換個人模式" }),
+          separator("md"),
+          rowBox({ label: "單筆指定", value: "共同 晚餐 800 對方付" }),
+          separator("md"),
+          rowBox({ label: "共同付款人", value: "交易卡片可切換我／對方付款" }),
+        ]),
+        footer([{ label: "目前模式", text: "目前模式" }, { label: "共同最近", text: "共同 最近 5" }]),
+      ),
+      bubble(
         header("查詢與報表", "想看什麼就直接問"),
         body([
-          rowBox({ label: "期間", value: "今天・昨天・週報・上週・本月・上月" }),
+          rowBox({ label: "最近筆數", value: "最近 5 / 共同 最近 10" }),
           separator("md"),
-          rowBox({ label: "篩選", value: "本月 共同 / 本月 個人 / 本月 #約會" }),
+          rowBox({ label: "指定日期", value: "昨天紀錄 / 共同昨天紀錄" }),
+          separator("md"),
+          rowBox({ label: "月報", value: "查月報 / 查 6月月報 / 共同月報" }),
           separator("md"),
           rowBox({ label: "搜尋", value: "找 牛肉麵" }),
           separator("md"),
           rowBox({ label: "排行", value: "分類排行" }),
-          separator("md"),
-          rowBox({ label: "約會模式", value: "切換共同模式 / 切換個人模式" }),
         ]),
-        footer([{ label: "目前模式", text: "目前模式" }, { label: "本週報表", text: "週報" }]),
+        footer([{ label: "查月報", text: "查月報" }, { label: "本週報表", text: "週報" }]),
       ),
       bubble(
         header("修改與管理", "最近列表直接點編輯"),
         body([
-          rowBox({ label: "卡片操作", value: "最近 5 → 編輯 → 改名稱／金額／標籤" }),
+          rowBox({ label: "卡片操作", value: "最近 5 → 編輯 → 改名稱／金額／分類／標籤" }),
           separator("md"),
           rowBox({ label: "修改", value: "改 #K7M2Q9TX 金額 180" }),
           separator("md"),
@@ -94,6 +123,21 @@ export function helpCards(altText: string): LineReplyFlexMessage {
         footer([{ label: "分類說明", text: "分類" }, { label: "標籤說明", text: "標籤" }]),
       ),
     ],
+  });
+}
+
+export function pairingGuideCard(altText: string): LineReplyFlexMessage {
+  return infoCard({
+    altText,
+    kicker: "DINERO 配對模式",
+    title: "先完成兩人配對",
+    rows: [
+      { label: "第一位", value: "傳送「建立配對」建立帳本身份" },
+      { label: "第二位", value: "在同一群組傳送「配對」加入" },
+      { label: "完成後", value: "兩人各自傳送「設定暱稱 名字」" },
+    ],
+    note: "每個 LINE 帳號一次只會連到一組配對，私訊記帳才不會跑錯帳本。",
+    actions: [{ label: "建立配對", text: "建立配對" }, { label: "完整說明", text: "使用說明" }],
   });
 }
 

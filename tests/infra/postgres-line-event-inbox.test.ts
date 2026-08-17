@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import pg from "pg";
@@ -7,7 +7,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { AcceptedLineEvent } from "../../src/http/webhook.js";
 import {
-  LineInboxLedgerNotFoundError,
   PostgresLineEventInbox,
 } from "../../src/infra/postgres-line-event-inbox.js";
 import type { NormalizedLineEvent } from "../../src/line/events.js";
@@ -30,13 +29,12 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
     await adminClient.query("SELECT pg_advisory_unlock(1947823612)");
     await adminClient.query(`CREATE SCHEMA ${schemaName}`);
     await adminClient.query(`SET search_path TO ${schemaName}, public`);
-    const migration = await readFile(
-      resolve(process.cwd(), "db/migrations/001_initial.up.sql"),
-      "utf8",
-    );
-    await adminClient.query(
-      migration.replace("CREATE EXTENSION IF NOT EXISTS pgcrypto;", ""),
-    );
+    const migrationDirectory = resolve(process.cwd(), "db/migrations");
+    const migrations = (await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort();
+    for (const name of migrations) {
+      const migration = await readFile(resolve(migrationDirectory, name), "utf8");
+      await adminClient.query(migration.replace("CREATE EXTENSION IF NOT EXISTS pgcrypto;", ""));
+    }
 
     const ledger = await adminClient.query<{ id: string }>(
       `INSERT INTO ledger (name, line_group_id)
@@ -71,7 +69,6 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
     );
     const inbox = new PostgresLineEventInbox(pool, {
       encryptDeliveryCredential,
-      privateLedgerGroupId: "C-ledger",
     });
 
     await inbox.acceptBatch("U-bot", [
@@ -201,7 +198,7 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
     expect(result.rows[0]?.count).toBe("0");
   });
 
-  it("rolls back the whole batch when any event has no ledger", async () => {
+  it("provisions an isolated ledger instead of failing a batch for a new group", async () => {
     const inbox = testInbox();
     const known = acceptedEvent(
       textEvent("E-before-missing", "M-before-missing", "便當 120"),
@@ -215,16 +212,18 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
       },
     });
 
-    await expect(inbox.acceptBatch("U-bot", [known, missing])).rejects.toBeInstanceOf(
-      LineInboxLedgerNotFoundError,
-    );
+    await expect(inbox.acceptBatch("U-bot", [known, missing])).resolves.toBeUndefined();
 
     const result = await pool.query<{ count: string }>(
       `SELECT count(*)::text AS count
          FROM inbound_event
         WHERE webhook_event_id IN ('E-before-missing', 'E-missing-ledger')`,
     );
-    expect(result.rows[0]?.count).toBe("0");
+    expect(result.rows[0]?.count).toBe("2");
+    const provisioned = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM ledger WHERE line_group_id='C-does-not-exist'",
+    );
+    expect(provisioned.rows[0]?.count).toBe("1");
   });
 
   it("acknowledges an unauthorized foreign group without retrying it forever", async () => {
@@ -255,6 +254,29 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
         WHERE webhook_event_id = 'E-foreign-group'`,
     );
     expect(result.rows[0]?.count).toBe("0");
+  });
+
+  it("provisions an isolated ledger and keeps only onboarding text for a new group", async () => {
+    const inbox = testInbox();
+    const pairing = {
+      ...textEvent("E-public-pairing", "M-public-pairing", "建立配對"),
+      source: { type: "group" as const, groupId: "C-new-couple", userId: "U-new" },
+    };
+    await inbox.acceptBatch("U-bot", [{
+      event: pairing,
+      authorization: { authorized: false, reason: "member_not_allowed" },
+    }]);
+
+    const result = await pool.query<{ ledger_count: string; tag_count: string; text: string }>(
+      `SELECT count(DISTINCT l.id)::text AS ledger_count,
+              count(DISTINCT t.id)::text AS tag_count,
+              max(ie.payload_json->'message'->>'text') AS text
+         FROM ledger l
+         JOIN tag t ON t.ledger_id=l.id AND t.is_system
+         JOIN inbound_event ie ON ie.ledger_id=l.id
+        WHERE l.line_group_id='C-new-couple'`,
+    );
+    expect(result.rows[0]).toEqual({ ledger_count: "1", tag_count: "14", text: "建立配對" });
   });
 
   it("keeps non-text content empty and stores only minimal edit/join delivery metadata", async () => {
@@ -304,7 +326,6 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
     return new PostgresLineEventInbox(pool, {
       encryptDeliveryCredential: (plaintext) =>
         Buffer.from(`encrypted:${plaintext}`, "utf8"),
-      privateLedgerGroupId: "C-ledger",
     });
   }
 });

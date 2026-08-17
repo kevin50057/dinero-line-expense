@@ -37,6 +37,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await admin.query(await readFile(resolve("db/migrations/004_category_knowledge.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/005_product_catalog.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/007_batch_transaction_event_source.sql"), "utf8"));
+    await admin.query(await readFile(resolve("db/migrations/008_public_pairing_provisioning.sql"), "utf8"));
     const ledger = await admin.query<{ id: string }>(
       `INSERT INTO ledger (name, line_group_id) VALUES ('Worker ledger', 'C-worker')
        RETURNING id::text AS id`,
@@ -413,15 +414,15 @@ describeWithPostgres("processNextInboundEvent integration", () => {
   it("replies with onboarding when the bot joins the ledger group", async () => {
     await insertLifecycleEvent("E-join", "join", "join", null);
     expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
-    const delivery = await pool.query<{ text: string; inbox_payload: unknown }>(
-      `SELECT om.payload_json->'messages'->0->>'text' AS text,
+    const delivery = await pool.query<{ alt_text: string; inbox_payload: unknown }>(
+      `SELECT om.payload_json->'messages'->0->>'altText' AS alt_text,
               ie.payload_json AS inbox_payload
          FROM outbox_message om JOIN inbound_event ie
            ON ie.webhook_event_id=om.source_webhook_event_id
         WHERE om.source_webhook_event_id='E-join'`,
     );
-    expect(delivery.rows[0]?.text).toContain("牛肉麵 150");
-    expect(delivery.rows[0]?.text).toContain("個人 咖啡 80");
+    expect(delivery.rows[0]?.alt_text).toContain("建立配對");
+    expect(delivery.rows[0]?.alt_text).toContain("使用說明");
     expect(delivery.rows[0]?.inbox_payload).toBeNull();
   });
 
@@ -543,6 +544,34 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     );
     expect(reply.rows[0]?.text).toContain("配對成功");
     expect(reply.rows[0]?.text).toContain("設定暱稱");
+  });
+
+  it("lets the first member establish a newly provisioned pairing", async () => {
+    const provisioned = await admin.query<{ id: string }>(
+      "SELECT provision_line_group_ledger('C-first-pair')::text AS id",
+    );
+    const pairingLedgerId = provisioned.rows[0]!.id;
+    await admin.query(
+      `INSERT INTO inbound_event
+       (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+       VALUES ('E-first-pair',$1,'message','M-first-pair','2026-08-13T04:10:00.123Z',$2::jsonb)`,
+      [pairingLedgerId, JSON.stringify({
+        destination: "U-bot", source: { userId: "U-first-new" },
+        message: { type: "text", text: "建立配對" },
+        replyTokenCiphertext: Buffer.from("cipher-first").toString("base64"),
+      })],
+    );
+
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const result = await pool.query<{ count: string; text: string }>(
+      `SELECT count(DISTINCT m.id)::text AS count,
+              max(om.payload_json->'messages'->0->>'text') AS text
+         FROM member m JOIN outbox_message om ON om.ledger_id=m.ledger_id
+        WHERE m.ledger_id=$1 AND m.is_active AND om.source_webhook_event_id='E-first-pair'`,
+      [pairingLedgerId],
+    );
+    expect(result.rows[0]?.count).toBe("1");
+    expect(result.rows[0]?.text).toContain("第一位成員");
   });
 
   it("journals an unsend before purging the matching expense", async () => {

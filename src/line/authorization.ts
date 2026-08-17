@@ -3,6 +3,8 @@ import type { NormalizedLineEvent } from "./events.js";
 export interface LineEventAuthorizationPolicy {
   allowedGroupIds: ReadonlySet<string> | readonly string[];
   allowedMemberUserIds: ReadonlySet<string> | readonly string[];
+  /** Allows the inbox to resolve/provision a group using the database. */
+  allowUnlistedGroups?: boolean;
 }
 
 export type LineEventAuthorizationDenialReason =
@@ -60,7 +62,7 @@ export function authorizeLineEvent(
   if (groupId === undefined) {
     return { authorized: false, reason: "group_id_missing" };
   }
-  if (!includes(policy.allowedGroupIds, groupId)) {
+  if (!includes(policy.allowedGroupIds, groupId) && !policy.allowUnlistedGroups) {
     return { authorized: false, reason: "group_not_allowed" };
   }
 
