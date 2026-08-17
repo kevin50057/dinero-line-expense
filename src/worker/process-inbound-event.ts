@@ -6,7 +6,11 @@ import {
   lineTextReply,
 } from "../application/expense-reply.js";
 import { generatePublicId } from "../application/public-id.js";
-import { pairingGuideCard } from "../application/line-cards.js";
+import {
+  pairingGuideCard,
+  pairingStatusCard,
+  unpairConsentCard,
+} from "../application/line-cards.js";
 import { inferMeal, parseExpenseMessage, parseLedgerCommand } from "../domain/index.js";
 import type { ParsedExpense, TypedTag } from "../domain/index.js";
 import type { LineReplyMessage } from "../outbox/payload.js";
@@ -70,6 +74,8 @@ interface TextPayload {
   message: { type: "text"; text: string };
   replyTokenCiphertext?: string;
 }
+
+type PairingManagementAction = "status" | "request_unpair" | "confirm_unpair" | "reject_unpair" | "cancel_unpair";
 
 interface LifecyclePayload {
   destination: string;
@@ -139,6 +145,7 @@ async function processLifecycleEvent(
       "第一位請輸入「建立配對」，第二位再輸入「配對」。",
       "完成後輸入「設定暱稱 你的名字」。",
       "預設是個人模式；約會時再輸入「切換共同模式」。",
+      "配對後可用「配對狀態」查看；解除必須雙方同意。",
       "傳送「使用說明」可查看完整功能。",
     ].join("\n");
     await enqueueReply(
@@ -275,6 +282,14 @@ async function processMessage(
     if (isPairingCommand(normalizedText)) {
       return pairLedgerMember(client, event, payload.source.userId, payload.replyTokenCiphertext);
     }
+    if (parsePairingManagementAction(normalizedText) === "status") {
+      const destination = await loadLedgerDestination(client, event.ledger_id);
+      const reply = "你目前沒有有效配對。請在兩人群組由第一位輸入「建立配對」，第二位輸入「配對」。";
+      await enqueueReply(client, event, destination, payload.replyTokenCiphertext,
+        "member_pairing_result", reply, pairingGuideCard(reply));
+      await finish(client, event, "noop");
+      return processedResult(event, "noop");
+    }
     const destination = await loadLedgerDestination(client, event.ledger_id);
     const reply = "你還沒完成配對。第一位請輸入「建立配對」，第二位輸入「配對」。";
     await enqueueReply(client, event, destination, payload.replyTokenCiphertext,
@@ -288,6 +303,17 @@ async function processMessage(
       "member_pairing_result", `你已經完成配對，帳本身份是「${identity.display_name}」。`);
     await finish(client, event, "noop");
     return processedResult(event, "noop");
+  }
+
+  const pairingAction = parsePairingManagementAction(payload.message.text);
+  if (pairingAction !== null) {
+    return processPairingManagement(
+      client,
+      event,
+      identity,
+      pairingAction,
+      payload.replyTokenCiphertext,
+    );
   }
 
   const command = parseLedgerCommand(payload.message.text);
@@ -506,6 +532,213 @@ async function pairLedgerMember(
 
 function isPairingCommand(text: string): boolean {
   return text === "配對" || text === "建立配對" || text === "開始配對";
+}
+
+function parsePairingManagementAction(input: string): PairingManagementAction | null {
+  const text = input.normalize("NFKC").trim().replace(/\s+/gu, "");
+  if (text === "配對狀態") return "status";
+  if (text === "解除配對" || text === "申請解除配對") return "request_unpair";
+  if (text === "同意解除" || text === "同意解除配對") return "confirm_unpair";
+  if (text === "拒絕解除" || text === "拒絕解除配對") return "reject_unpair";
+  if (text === "取消解除" || text === "取消解除配對") return "cancel_unpair";
+  return null;
+}
+
+interface ActivePairMember {
+  id: string;
+  display_name: string;
+}
+
+interface PendingDissolution {
+  id: string;
+  requested_by_member_id: string;
+  requester_name: string;
+  expires_at: Date;
+}
+
+async function processPairingManagement(
+  client: PoolClient,
+  event: ClaimedEvent,
+  identity: LedgerMember,
+  action: PairingManagementAction,
+  replyTokenCiphertext: string | undefined,
+): Promise<ProcessInboundEventResult> {
+  await client.query("SELECT id FROM ledger WHERE id=$1 FOR UPDATE", [event.ledger_id]);
+  await client.query(
+    `UPDATE pairing_dissolution_request
+        SET status='expired', responded_at=clock_timestamp()
+      WHERE ledger_id=$1 AND status='pending' AND expires_at <= clock_timestamp()`,
+    [event.ledger_id],
+  );
+  const pair = await loadActivePairMembers(client, event.ledger_id);
+  if (pair.length !== 2) {
+    const reply = "解除配對只適用於已完成的兩人配對。你可以輸入「建立配對」或「配對」完成設定。";
+    await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply, pairingGuideCard(reply));
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+  const actor = pair.find((member) => member.id === identity.member_id);
+  const partner = pair.find((member) => member.id !== identity.member_id);
+  if (actor === undefined || partner === undefined) throw new Error("active_pair_identity_mismatch");
+  const pending = await loadPendingDissolution(client, event.ledger_id);
+
+  if (action === "status") {
+    const reply = pending === null
+      ? `你目前與「${partner.display_name}」配對中。解除配對必須雙方同意。`
+      : `「${pending.requester_name}」已提出解除配對，需在 ${formatPairingTime(pending.expires_at, identity.timezone)} 前由另一方確認。`;
+    await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply, pairingStatusCard({
+        altText: reply,
+        memberName: actor.display_name,
+        partnerName: partner.display_name,
+        ...(pending === null ? {} : {
+          pendingRequestedBy: pending.requester_name,
+          pendingExpiresAt: formatPairingTime(pending.expires_at, identity.timezone),
+          viewerIsRequester: pending.requested_by_member_id === actor.id,
+        }),
+      }));
+    await finish(client, event, "applied");
+    return processedResult(event, "applied");
+  }
+
+  if (action === "request_unpair") {
+    if (pending !== null) {
+      const isRequester = pending.requested_by_member_id === actor.id;
+      const reply = isRequester
+        ? `解除申請已送出，正在等待「${partner.display_name}」同意。`
+        : `「${pending.requester_name}」已提出解除；若你也同意，請輸入「同意解除」。`;
+      await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+        "member_pairing_result", reply, unpairConsentCard({
+          altText: reply,
+          requesterName: pending.requester_name,
+          partnerName: isRequester ? partner.display_name : actor.display_name,
+          expiresAt: formatPairingTime(pending.expires_at, identity.timezone),
+        }));
+      await finish(client, event, "noop");
+      return processedResult(event, "noop");
+    }
+    const inserted = await client.query<{ expires_at: Date }>(
+      `INSERT INTO pairing_dissolution_request (ledger_id,requested_by_member_id)
+       VALUES ($1,$2) RETURNING expires_at`,
+      [event.ledger_id, actor.id],
+    );
+    const expiresAt = inserted.rows[0]!.expires_at;
+    const reply = `已提出解除配對，等待「${partner.display_name}」在 24 小時內同意；確認前仍可正常記帳。`;
+    await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply, unpairConsentCard({
+        altText: reply,
+        requesterName: actor.display_name,
+        partnerName: partner.display_name,
+        expiresAt: formatPairingTime(expiresAt, identity.timezone),
+      }));
+    await finish(client, event, "applied");
+    return processedResult(event, "applied");
+  }
+
+  if (pending === null) {
+    const reply = "目前沒有等待確認的解除申請。若要開始，請先輸入「解除配對」。";
+    await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+
+  const actorRequested = pending.requested_by_member_id === actor.id;
+  if (action === "confirm_unpair") {
+    if (actorRequested) {
+      const reply = "發起人不能替對方同意；請等待配對對象輸入「同意解除」，或輸入「取消解除」。";
+      await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+        "member_pairing_result", reply);
+      await finish(client, event, "rejected");
+      return processedResult(event, "rejected");
+    }
+    await client.query(
+      `UPDATE pairing_dissolution_request
+          SET status='confirmed', responded_by_member_id=$2, responded_at=clock_timestamp()
+        WHERE id=$1 AND status='pending'`,
+      [pending.id, actor.id],
+    );
+    await client.query(
+      "UPDATE member SET is_active=false, updated_at=clock_timestamp() WHERE ledger_id=$1 AND is_active",
+      [event.ledger_id],
+    );
+    const archivedGroupId = `archived:${event.ledger_id}:${identity.line_group_id}`;
+    await client.query(
+      "UPDATE ledger SET line_group_id=$2, updated_at=clock_timestamp() WHERE id=$1",
+      [event.ledger_id, archivedGroupId],
+    );
+    await client.query("SELECT provision_line_group_ledger($1)", [identity.line_group_id]);
+    const reply = "雙方已同意，配對已解除。舊帳本已安全封存；你們現在都能自由建立新的配對。";
+    await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply, pairingGuideCard(reply));
+    await finish(client, event, "applied");
+    return processedResult(event, "applied");
+  }
+
+  if (action === "reject_unpair" && actorRequested) {
+    const reply = "發起人若不想繼續解除，請輸入「取消解除」。";
+    await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+  if (action === "cancel_unpair" && !actorRequested) {
+    const reply = "你不是申請發起人；若不同意解除，請輸入「拒絕解除」。";
+    await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+
+  const status = actorRequested ? "cancelled" : "rejected";
+  await client.query(
+    `UPDATE pairing_dissolution_request
+        SET status=$2, responded_by_member_id=$3, responded_at=clock_timestamp()
+      WHERE id=$1 AND status='pending'`,
+    [pending.id, status, actorRequested ? null : actor.id],
+  );
+  const reply = actorRequested
+    ? "解除申請已取消，原配對維持不變。"
+    : "你已拒絕解除，原配對維持不變。";
+  await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+    "member_pairing_result", reply);
+  await finish(client, event, "applied");
+  return processedResult(event, "applied");
+}
+
+async function loadActivePairMembers(client: PoolClient, ledgerId: string): Promise<ActivePairMember[]> {
+  const result = await client.query<ActivePairMember>(
+    `SELECT id::text,display_name FROM member
+      WHERE ledger_id=$1 AND is_active ORDER BY created_at,id FOR UPDATE`,
+    [ledgerId],
+  );
+  return result.rows;
+}
+
+async function loadPendingDissolution(client: PoolClient, ledgerId: string): Promise<PendingDissolution | null> {
+  const result = await client.query<PendingDissolution>(
+    `SELECT request.id::text,request.requested_by_member_id::text,
+            requester.display_name AS requester_name,request.expires_at
+       FROM pairing_dissolution_request request
+       JOIN member requester ON requester.id=request.requested_by_member_id
+      WHERE request.ledger_id=$1 AND request.status='pending'
+      FOR UPDATE OF request`,
+    [ledgerId],
+  );
+  return result.rows[0] ?? null;
+}
+
+function formatPairingTime(value: Date, timezone: string): string {
+  return new Intl.DateTimeFormat("zh-TW", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(value);
 }
 
 async function loadLedgerDestination(client: PoolClient, ledgerId: string): Promise<string | null> {

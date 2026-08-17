@@ -64,8 +64,10 @@ export function helpCards(altText: string): LineReplyFlexMessage {
           rowBox({ label: "第 3 步", value: "第二人傳送「配對」" }),
           separator("md"),
           rowBox({ label: "設定名字", value: "設定暱稱 小美" }),
+          separator("md"),
+          rowBox({ label: "解除配對", value: "一人申請、另一人同意才生效" }),
         ]),
-        footer([{ label: "建立配對", text: "建立配對" }, { label: "配對狀態", text: "配對" }]),
+        footer([{ label: "建立配對", text: "建立配對" }, { label: "配對狀態", text: "配對狀態" }]),
       ),
       bubble(
         header("DINERO 快速開始", "一句話就能記帳"),
@@ -135,9 +137,70 @@ export function pairingGuideCard(altText: string): LineReplyFlexMessage {
       { label: "第一位", value: "傳送「建立配對」建立帳本身份" },
       { label: "第二位", value: "在同一群組傳送「配對」加入" },
       { label: "完成後", value: "兩人各自傳送「設定暱稱 名字」" },
+      { label: "解除時", value: "一人傳送「解除配對」，另一人同意" },
     ],
     note: "每個 LINE 帳號一次只會連到一組配對，私訊記帳才不會跑錯帳本。",
-    actions: [{ label: "建立配對", text: "建立配對" }, { label: "完整說明", text: "使用說明" }],
+    actions: [{ label: "建立配對", text: "建立配對" }, { label: "配對狀態", text: "配對狀態" }],
+  });
+}
+
+export function pairingStatusCard(options: {
+  readonly altText: string;
+  readonly memberName: string;
+  readonly partnerName: string;
+  readonly pendingRequestedBy?: string;
+  readonly pendingExpiresAt?: string;
+  readonly viewerIsRequester?: boolean;
+}): LineReplyFlexMessage {
+  const pending = options.pendingRequestedBy === undefined
+    ? []
+    : [
+        { label: "解除申請", value: `${options.pendingRequestedBy} 已提出` },
+        ...(options.pendingExpiresAt === undefined
+          ? []
+          : [{ label: "確認期限", value: options.pendingExpiresAt }]),
+      ];
+  return infoCard({
+    altText: options.altText,
+    kicker: "DINERO 配對狀態",
+    title: "目前已完成配對",
+    rows: [
+      { label: "你的暱稱", value: options.memberName },
+      { label: "配對對象", value: options.partnerName },
+      ...pending,
+    ],
+    note: options.pendingRequestedBy === undefined
+      ? "解除配對必須由一方提出、另一方同意，任何一人都不能單方面解除。"
+      : "申請確認前仍維持配對；逾時會自動失效。",
+    actions: options.pendingRequestedBy === undefined
+      ? [{ label: "解除配對", text: "解除配對" }, { label: "使用說明", text: "使用說明" }]
+      : options.viewerIsRequester
+        ? [{ label: "取消申請", text: "取消解除" }, { label: "查看狀態", text: "配對狀態" }]
+        : [{ label: "同意解除", text: "同意解除" }, { label: "拒絕解除", text: "拒絕解除" }],
+  });
+}
+
+export function unpairConsentCard(options: {
+  readonly altText: string;
+  readonly requesterName: string;
+  readonly partnerName: string;
+  readonly expiresAt: string;
+}): LineReplyFlexMessage {
+  return infoCard({
+    altText: options.altText,
+    kicker: "DINERO 雙方確認",
+    title: "等待對方同意解除",
+    rows: [
+      { label: "發起人", value: options.requesterName },
+      { label: "確認人", value: options.partnerName },
+      { label: "期限", value: options.expiresAt },
+    ],
+    note: "確認前配對與記帳功能都維持原狀。解除後舊帳本會封存，雙方可自由建立新配對。",
+    actions: [
+      { label: "同意解除", text: "同意解除" },
+      { label: "拒絕解除", text: "拒絕解除" },
+      { label: "查看狀態", text: "配對狀態" },
+    ],
   });
 }
 

@@ -38,6 +38,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await admin.query(await readFile(resolve("db/migrations/005_product_catalog.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/007_batch_transaction_event_source.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/008_public_pairing_provisioning.sql"), "utf8"));
+    await admin.query(await readFile(resolve("db/migrations/009_mutual_unpairing.sql"), "utf8"));
     const ledger = await admin.query<{ id: string }>(
       `INSERT INTO ledger (name, line_group_id) VALUES ('Worker ledger', 'C-worker')
        RETURNING id::text AS id`,
@@ -572,6 +573,112 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     );
     expect(result.rows[0]?.count).toBe("1");
     expect(result.rows[0]?.text).toContain("第一位成員");
+  });
+
+  it("requires the partner to confirm unpairing, then archives the old ledger", async () => {
+    const provisioned = await admin.query<{ id: string }>(
+      "SELECT provision_line_group_ledger('C-mutual-unpair')::text AS id",
+    );
+    const oldLedgerId = provisioned.rows[0]!.id;
+    await admin.query(
+      `INSERT INTO member (ledger_id,line_user_id,display_name)
+       VALUES ($1,'U-unpair-a','阿明'),($1,'U-unpair-b','小美')`,
+      [oldLedgerId],
+    );
+    const insertPairingEvent = async (eventId: string, messageId: string, userId: string, text: string) => {
+      await admin.query(
+        `INSERT INTO inbound_event
+         (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+         VALUES ($1,$2,'message',$3,clock_timestamp(),$4::jsonb)`,
+        [eventId, oldLedgerId, messageId, JSON.stringify({
+          destination: "U-bot",
+          source: { chatType: "group", userId },
+          message: { type: "text", text },
+          replyTokenCiphertext: Buffer.from(`cipher-${eventId}`).toString("base64"),
+        })],
+      );
+    };
+
+    await insertPairingEvent("E-unpair-request", "M-unpair-request", "U-unpair-a", "解除配對");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const pending = await pool.query<{ status: string; requester: string }>(
+      `SELECT request.status,member.line_user_id AS requester
+         FROM pairing_dissolution_request request
+         JOIN member ON member.id=request.requested_by_member_id
+        WHERE request.ledger_id=$1`,
+      [oldLedgerId],
+    );
+    expect(pending.rows[0]).toEqual({ status: "pending", requester: "U-unpair-a" });
+
+    await insertPairingEvent("E-unpair-self-confirm", "M-unpair-self-confirm", "U-unpair-a", "同意解除");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "rejected" });
+    const stillActive = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM member WHERE ledger_id=$1 AND is_active",
+      [oldLedgerId],
+    );
+    expect(stillActive.rows[0]?.count).toBe("2");
+
+    await insertPairingEvent("E-unpair-confirm", "M-unpair-confirm", "U-unpair-b", "同意解除");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const completed = await pool.query<{ active_count: string; status: string; archived_group: string }>(
+      `SELECT count(*) FILTER (WHERE member.is_active)::text AS active_count,
+              max(request.status) AS status,max(ledger.line_group_id) AS archived_group
+         FROM ledger
+         JOIN member ON member.ledger_id=ledger.id
+         JOIN pairing_dissolution_request request ON request.ledger_id=ledger.id
+        WHERE ledger.id=$1
+        GROUP BY ledger.id`,
+      [oldLedgerId],
+    );
+    expect(completed.rows[0]).toMatchObject({ active_count: "0", status: "confirmed" });
+    expect(completed.rows[0]?.archived_group).toContain(`archived:${oldLedgerId}:`);
+    const replacement = await pool.query<{ id: string; member_count: string; tag_count: string }>(
+      `SELECT ledger.id::text,
+              count(DISTINCT member.id)::text AS member_count,
+              count(DISTINCT tag.id)::text AS tag_count
+         FROM ledger
+         LEFT JOIN member ON member.ledger_id=ledger.id AND member.is_active
+         JOIN tag ON tag.ledger_id=ledger.id AND tag.is_system
+        WHERE ledger.line_group_id='C-mutual-unpair'
+        GROUP BY ledger.id`,
+    );
+    expect(replacement.rows[0]).toMatchObject({ member_count: "0", tag_count: "14" });
+    expect(replacement.rows[0]?.id).not.toBe(oldLedgerId);
+  });
+
+  it("allows either side to cancel or reject an unpair request without changing membership", async () => {
+    const provisioned = await admin.query<{ id: string }>(
+      "SELECT provision_line_group_ledger('C-cancel-unpair')::text AS id",
+    );
+    const cancelLedgerId = provisioned.rows[0]!.id;
+    await admin.query(
+      `INSERT INTO member (ledger_id,line_user_id,display_name)
+       VALUES ($1,'U-cancel-a','甲'),($1,'U-cancel-b','乙')`,
+      [cancelLedgerId],
+    );
+    const submit = async (eventId: string, userId: string, text: string) => {
+      await admin.query(
+        `INSERT INTO inbound_event
+         (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+         VALUES ($1,$2,'message',$3,clock_timestamp(),$4::jsonb)`,
+        [eventId, cancelLedgerId, `M-${eventId}`, JSON.stringify({
+          destination: "U-bot", source: { chatType: "group", userId },
+          message: { type: "text", text },
+        })],
+      );
+      return processNextInboundEvent(pool);
+    };
+    expect(await submit("E-cancel-request", "U-cancel-a", "解除配對")).toMatchObject({ outcome: "applied" });
+    expect(await submit("E-cancel-own", "U-cancel-a", "取消解除")).toMatchObject({ outcome: "applied" });
+    expect(await submit("E-reject-request", "U-cancel-a", "解除配對")).toMatchObject({ outcome: "applied" });
+    expect(await submit("E-reject-other", "U-cancel-b", "拒絕解除")).toMatchObject({ outcome: "applied" });
+    const result = await pool.query<{ statuses: string[]; active_count: string }>(
+      `SELECT (SELECT array_agg(request.status ORDER BY request.requested_at)
+                 FROM pairing_dissolution_request request WHERE request.ledger_id=$1) AS statuses,
+              (SELECT count(*)::text FROM member WHERE ledger_id=$1 AND is_active) AS active_count`,
+      [cancelLedgerId],
+    );
+    expect(result.rows[0]).toEqual({ statuses: ["cancelled", "rejected"], active_count: "2" });
   });
 
   it("journals an unsend before purging the matching expense", async () => {

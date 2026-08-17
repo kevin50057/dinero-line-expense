@@ -53,6 +53,8 @@ Seed 會明確設定：
 
 公開模式不需要為每組使用者執行 seed；seed 保留給單帳本開發、測試或既有資料初始化。
 
+`009_mutual_unpairing.sql` 新增雙方同意解除流程。`解除配對` 只建立 24 小時 pending request；必須由另一位 active member 確認。完成時兩個 member 身份同時停用，舊 ledger 改用不可路由的 archived group ID，並為原 LINE 群組建立全新空 ledger。這可讓雙方重新配對，同時阻止未來成員讀到上一組的歷史資料。
+
 ## 分類知識表
 
 `004_category_knowledge.sql` 建立 `category_knowledge_rule`，並載入台灣常見消費的系統規則。分類時依序採用帳本專屬精確規則、系統 exact／contains 規則，再回退到程式內的保守分類器。每次命中會更新 `hit_count` 與 `last_matched_at`。

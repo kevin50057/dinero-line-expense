@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { helpCards, infoCard } from "../../src/application/line-cards.js";
+import {
+  helpCards,
+  infoCard,
+  pairingStatusCard,
+  unpairConsentCard,
+} from "../../src/application/line-cards.js";
 import { parseLineReplyPayload } from "../../src/outbox/index.js";
 
 describe("LINE Flex card builders", () => {
@@ -68,5 +73,27 @@ describe("LINE Flex card builders", () => {
     expect(JSON.stringify(parsed)).toContain('"label":"改分類"');
     expect(JSON.stringify(parsed)).toContain('"fillInText":"改 #BX73H72A 分類 未分類"');
     expect(JSON.stringify(parsed)).toContain('"label":"取消這筆"');
+  });
+
+  it("builds valid pairing status and mutual unpair consent cards", () => {
+    const status = pairingStatusCard({
+      altText: "小明與小美配對中",
+      memberName: "小明",
+      partnerName: "小美",
+      pendingRequestedBy: "小明",
+      pendingExpiresAt: "2026/08/18 14:00",
+      viewerIsRequester: true,
+    });
+    const consent = unpairConsentCard({
+      altText: "等待小美同意解除",
+      requesterName: "小明",
+      partnerName: "小美",
+      expiresAt: "2026/08/18 14:00",
+    });
+    expect(parseLineReplyPayload({ messages: [status] })).toEqual({ messages: [status] });
+    expect(parseLineReplyPayload({ messages: [consent] })).toEqual({ messages: [consent] });
+    expect(JSON.stringify(status)).toContain('"label":"取消申請"');
+    expect(JSON.stringify(consent)).toContain('"label":"同意解除"');
+    expect(JSON.stringify(consent)).toContain('"color":"#FFFFFF"');
   });
 });

@@ -262,21 +262,30 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
       ...textEvent("E-public-pairing", "M-public-pairing", "建立配對"),
       source: { type: "group" as const, groupId: "C-new-couple", userId: "U-new" },
     };
-    await inbox.acceptBatch("U-bot", [{
-      event: pairing,
-      authorization: { authorized: false, reason: "member_not_allowed" },
-    }]);
+    const status = {
+      ...textEvent("E-public-pairing-status", "M-public-pairing-status", "配對狀態"),
+      source: { type: "group" as const, groupId: "C-new-couple", userId: "U-new" },
+    };
+    await inbox.acceptBatch("U-bot", [pairing, status].map((event) => ({
+      event,
+      authorization: { authorized: false as const, reason: "member_not_allowed" as const },
+    })));
 
-    const result = await pool.query<{ ledger_count: string; tag_count: string; text: string }>(
+    const result = await pool.query<{ ledger_count: string; tag_count: string; texts: string[] }>(
       `SELECT count(DISTINCT l.id)::text AS ledger_count,
               count(DISTINCT t.id)::text AS tag_count,
-              max(ie.payload_json->'message'->>'text') AS text
+              array_agg(DISTINCT ie.payload_json->'message'->>'text'
+                        ORDER BY ie.payload_json->'message'->>'text') AS texts
          FROM ledger l
          JOIN tag t ON t.ledger_id=l.id AND t.is_system
          JOIN inbound_event ie ON ie.ledger_id=l.id
         WHERE l.line_group_id='C-new-couple'`,
     );
-    expect(result.rows[0]).toEqual({ ledger_count: "1", tag_count: "14", text: "建立配對" });
+    expect(result.rows[0]).toEqual({
+      ledger_count: "1",
+      tag_count: "14",
+      texts: ["建立配對", "配對狀態"],
+    });
   });
 
   it("keeps non-text content empty and stores only minimal edit/join delivery metadata", async () => {

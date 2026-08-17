@@ -339,6 +339,16 @@
 - 成功後第二位成員暫名為「另一半」，可立即新增、查詢與操作符合權限的帳目；重複傳送 `配對`只回覆已完成，不重複建立 member。
 - 已有兩位 active member、非允許群組、非文字、缺少 user ID 或不是完全匹配的訊息，均不得成為配對入口。
 
+### 7.8 雙方同意解除與重新配對
+
+- `配對狀態` 顯示目前兩位 active member 與尚未到期的解除申請；沒有 active 身份時只顯示建立配對說明。
+- `解除配對` 只建立有效 24 小時的 pending 申請，申請期間原配對、記帳與查詢功能保持有效。
+- 發起人不能確認自己的申請；只有另一位 active member 傳送 `同意解除` 才能完成。另一位可用 `拒絕解除`，發起人可用 `取消解除`。
+- 同一 ledger 同時至多一筆 pending 申請；重複提出、確認、取消與拒絕均不能造成重複停用或建立多本 replacement ledger。
+- 完成解除時，在同一 DB transaction 將申請標為 confirmed、停用兩位 member、把舊 ledger 的 LINE group route 改為 archived ID，並為原群組 provision 全新空 ledger 與 system tags。
+- 舊交易與稽核資料不交給 replacement ledger 或未來配對成員；兩個已停用 LINE 身份不再能以私訊路由到舊 ledger，且可分別加入新的 active 配對。
+- 解除完成前的 LINE 回覆不得宣稱已解除；所有卡片需清楚顯示仍在等待另一方確認。
+
 ## 8. LINE 原生事件
 
 ### 8.1 編輯訊息

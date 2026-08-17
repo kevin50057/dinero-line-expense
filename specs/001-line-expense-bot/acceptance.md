@@ -1228,3 +1228,33 @@ Then 回傳跨 category 的 active 原生家庭支出總額
 When DB 嘗試建立 source=inferred 的一般使用者 custom tag assignment
 Then trigger 原子拒絕，只有 active system context tag 可由規則推定
 ```
+
+### A88 — 解除配對必須雙方同意並隔離舊帳本
+
+```gherkin
+Given ledger 有且只有小明、小美兩位 active member
+When 小明傳送「解除配對」
+Then 建立一筆 24 小時後到期的 pending dissolution request
+And 小明與小美仍為 active 且可繼續記帳
+And LINE 卡片提供同意、拒絕與查看狀態操作
+
+When 小明自己傳送「同意解除」
+Then 系統拒絕且不修改兩人的 active 狀態
+
+When 小美傳送「拒絕解除」
+Then request 變為 rejected 且原配對維持不變
+
+When 小明再次申請後傳送「取消解除」
+Then request 變為 cancelled 且原配對維持不變
+
+When 小明再次申請且小美在期限內傳送「同意解除」
+Then request、兩位 member 停用、舊 ledger 封存與新 ledger provisioning 在同一 transaction commit
+And 舊 ledger 的交易與稽核資料沒有複製到新 ledger
+And 原群組 route 指向具有完整 system tags 的全新空 ledger
+And 小明、小美的私訊不再路由到舊 ledger
+And 兩人都可以各自加入新的 active 配對
+
+Given pending request 已超過 expires_at
+When 任一人傳送「配對狀態」或解除相關指令
+Then 舊 request 原子標為 expired 且不能再被同意
+```
