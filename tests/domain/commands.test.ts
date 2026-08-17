@@ -26,13 +26,20 @@ describe("parseLedgerCommand", () => {
     ["昨天 共同紀錄", { kind: "period", period: "yesterday", filter: { kind: "shared" } }],
     ["昨天紀錄", { kind: "period", period: "yesterday", filter: { kind: "personal" } }],
     ["月報", { kind: "period", period: "month", filter: { kind: "personal" } }],
+    ["查月報", { kind: "period", period: "month", filter: { kind: "personal" } }],
+    ["  查   月報  ", { kind: "period", period: "month", filter: { kind: "personal" } }],
     ["共同月報", { kind: "period", period: "month", filter: { kind: "shared" } }],
+    ["查 共同 月報", { kind: "period", period: "month", filter: { kind: "shared" } }],
     ["個人月報", { kind: "period", period: "month", filter: { kind: "personal" } }],
     ["7月月報", { kind: "period", period: { kind: "calendar_month", year: null, month: 7 }, filter: { kind: "personal" } }],
+    ["查6月月報", { kind: "period", period: { kind: "calendar_month", year: null, month: 6 }, filter: { kind: "personal" } }],
+    ["查 6 月 月報", { kind: "period", period: { kind: "calendar_month", year: null, month: 6 }, filter: { kind: "personal" } }],
+    ["查 6 月 月報 共同", { kind: "period", period: { kind: "calendar_month", year: null, month: 6 }, filter: { kind: "shared" } }],
     ["共同7月月報", { kind: "period", period: { kind: "calendar_month", year: null, month: 7 }, filter: { kind: "shared" } }],
     ["7月共同月報", { kind: "period", period: { kind: "calendar_month", year: null, month: 7 }, filter: { kind: "shared" } }],
     ["2025年7月月報", { kind: "period", period: { kind: "calendar_month", year: 2025, month: 7 }, filter: { kind: "personal" } }],
     ["2025年7月月報 共同", { kind: "period", period: { kind: "calendar_month", year: 2025, month: 7 }, filter: { kind: "shared" } }],
+    ["查 2025 年 7 月 月報", { kind: "period", period: { kind: "calendar_month", year: 2025, month: 7 }, filter: { kind: "personal" } }],
     ["上月", { kind: "period", period: "last_month", filter: { kind: "personal" } }],
     ["找 牛肉麵", { kind: "search", keyword: "牛肉麵" }],
     ["搜尋 約會 晚餐", { kind: "search", keyword: "約會 晚餐" }],
@@ -72,5 +79,6 @@ describe("parseLedgerCommand", () => {
   it("returns not_command for an expense", () => {
     expect(parseLedgerCommand("牛肉麵 150")).toEqual({ kind: "not_command" });
     expect(parseLedgerCommand("昨天 牛肉麵 150")).toEqual({ kind: "not_command" });
+    expect(parseLedgerCommand("查理 100")).toEqual({ kind: "not_command" });
   });
 });

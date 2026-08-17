@@ -57,6 +57,11 @@ const MAX_TAGS = 10;
 /** Parses the reserved command language before create-expense parsing. */
 export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   const text = input.normalize("NFKC").trim().replace(/\s+/gu, " ");
+  // `查` is an optional query prefix for reports. Keep the original text for
+  // commands such as `查 #PUBLIC_ID`, and compact only report expressions so
+  // natural variants such as `查 6 月 月報` remain equivalent to `6月月報`.
+  const reportText = text.startsWith("查") ? text.slice(1).trim() : text;
+  const compactReportText = reportText.replace(/\s+/gu, "");
   if (text === "說明" || text === "幫助" || text === "help") return command({ kind: "help" });
   if (text === "分類") return command({ kind: "categories" });
   if (text === "分類規則" || text === "分類知識表") return command({ kind: "category_rules" });
@@ -134,25 +139,25 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
     return command({ kind: "period", period: dayPeriodFromLabel(match[1]!), filter: { kind: "personal" } });
   }
 
-  match = /^(共同|個人|全部)月報$/u.exec(text);
+  match = /^(共同|個人|全部)月報$/u.exec(compactReportText);
   if (match) {
     return command({ kind: "period", period: "month", filter: parseNamedFilter(match[1]!) });
   }
 
-  match = /^(?:(共同|個人|全部)\s*)?(?:(\d{4})年)?(\d{1,2})月月報$/u.exec(text);
+  match = /^(?:(共同|個人|全部))?(?:(\d{4})年)?(\d{1,2})月月報$/u.exec(compactReportText);
   if (match) {
     return parseCalendarMonthReport(match[2], match[3]!, match[1]);
   }
-  match = /^(?:(\d{4})年)?(\d{1,2})月(共同|個人|全部)月報$/u.exec(text);
+  match = /^(?:(\d{4})年)?(\d{1,2})月(共同|個人|全部)月報$/u.exec(compactReportText);
   if (match) {
     return parseCalendarMonthReport(match[1], match[2]!, match[3]);
   }
-  match = /^(?:(\d{4})年)?(\d{1,2})月月報\s+(共同|個人|全部)$/u.exec(text);
+  match = /^(?:(\d{4})年)?(\d{1,2})月月報(共同|個人|全部)$/u.exec(compactReportText);
   if (match) {
     return parseCalendarMonthReport(match[1], match[2]!, match[3]);
   }
 
-  match = /^(今天|今日|昨天|昨日|前天|週報|這週|本週|上週|本月|月報|上月)(?: (\S+))?$/u.exec(text);
+  match = /^(今天|今日|昨天|昨日|前天|週報|這週|本週|上週|本月|月報|上月)(?: (\S+))?$/u.exec(reportText);
   if (match) {
     const filter = parseFilter(match[2]);
     if (filter === null) return invalid("查詢篩選可用：共同、個人或 #標籤。");
