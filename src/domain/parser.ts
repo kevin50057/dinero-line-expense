@@ -57,6 +57,11 @@ interface AmountAndBody {
   readonly body: string;
 }
 
+interface PayerAndBody {
+  readonly payer: "self" | "partner";
+  readonly body: string;
+}
+
 interface ExtractedHashtags {
   readonly body: string;
   readonly hashtags: readonly string[];
@@ -130,7 +135,8 @@ export function parseExpenseMessage(
     return parsedTags;
   }
 
-  const amountAndBody = parseAmountAndBody(extractedTags.value.body);
+  const payerAndBody = parsePayerSuffix(extractedTags.value.body);
+  const amountAndBody = parseAmountAndBody(payerAndBody.body);
   if (!amountAndBody.ok) {
     return amountAndBody;
   }
@@ -148,6 +154,9 @@ export function parseExpenseMessage(
   }
 
   const state = prefixState.value;
+  if (payerAndBody.payer === "partner" && state.scope !== "shared") {
+    return failure("PAYER_REQUIRES_SHARED", "只有共同支出可以指定對方付款；請切換共同模式或在最前面加「共同」。");
+  }
   const description = normalizeDescription(state.description);
   if (description.length === 0) {
     return failure("DESCRIPTION_REQUIRED", "請提供支出項目。");
@@ -250,6 +259,7 @@ export function parseExpenseMessage(
       amountMinor: amountAndBody.value.amountMinor,
       currency: "TWD",
       scope: state.scope,
+      payer: payerAndBody.payer,
       occurredOn: state.occurredOn,
       occurredAt: state.occurredAt,
       occurredTime: state.occurredTime,
@@ -378,6 +388,15 @@ function parseHashtags(hashtags: readonly string[]): LocalResult<ParsedHashtags>
       meal,
       customTags: [...customByNormalizedName.values()],
     },
+  };
+}
+
+function parsePayerSuffix(text: string): PayerAndBody {
+  const match = /^(.*\S)\s+(對方|我|自己)(?:付|付款)$/u.exec(text.trim());
+  if (match === null) return { payer: "self", body: text };
+  return {
+    payer: match[2] === "對方" ? "partner" : "self",
+    body: match[1]!,
   };
 }
 

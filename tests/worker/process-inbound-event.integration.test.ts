@@ -36,6 +36,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await admin.query(await readFile(resolve("db/migrations/003_native_family_system_tag.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/004_category_knowledge.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/005_product_catalog.sql"), "utf8"));
+    await admin.query(await readFile(resolve("db/migrations/007_batch_transaction_event_source.sql"), "utf8"));
     const ledger = await admin.query<{ id: string }>(
       `INSERT INTO ledger (name, line_group_id) VALUES ('Worker ledger', 'C-worker')
        RETURNING id::text AS id`,
@@ -678,6 +679,62 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     );
     expect(report.rows[0]?.alt_text).toContain("共同記帳人：小明 620 元");
     expect(report.rows[0]?.alt_text).toContain("共同付款人：小美 620 元");
+  });
+
+  it("assigns a paired partner while creating a shared expense", async () => {
+    await insertTextEvent("E-partner-create", "M-partner-create", "共同 2026/5/10 雞排 150元 對方付");
+    await expect(processNextInboundEvent(pool, { generatePublicId: () => "CHKNPA2R" }))
+      .resolves.toMatchObject({ outcome: "applied", publicId: "CHKNPA2R" });
+    const state = await pool.query<{ description: string; creator: string; payer: string }>(
+      `SELECT e.description,creator.line_user_id AS creator,payer.line_user_id AS payer
+         FROM expense_transaction e
+         JOIN member creator ON creator.id=e.created_by_member_id
+         JOIN member payer ON payer.id=e.payer_member_id
+        WHERE e.public_id='CHKNPA2R'`,
+    );
+    expect(state.rows[0]).toEqual({ description: "雞排", creator: "U-ming", payer: "U-mei" });
+
+    await insertTextEvent("E-partner-personal-denied", "M-partner-personal-denied", "個人 奶茶 80 對方付");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "rejected" });
+  });
+
+  it("bulk changes only shared expenses and lists every changed transaction", async () => {
+    const creates = [
+      ["E-bulk-a", "M-bulk-a", "共同 前天 雞排 150", "BAXKPA2R"],
+      ["E-bulk-b", "M-bulk-b", "共同 前天 奶茶 80", "BAXKPB2R"],
+      ["E-bulk-personal", "M-bulk-personal", "個人 前天 私人用品 60", "BAXKPC2R"],
+    ] as const;
+    for (const [eventId, messageId, text, publicId] of creates) {
+      await insertTextEvent(eventId, messageId, text);
+      await expect(processNextInboundEvent(pool, { generatePublicId: () => publicId }))
+        .resolves.toMatchObject({ outcome: "applied", publicId });
+    }
+
+    await insertTextEvent("E-bulk-payer", "M-bulk-payer", "前天 全部 對方付");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
+    const state = await pool.query<{ public_id: string; scope: string; payer: string }>(
+      `SELECT e.public_id,e.scope::text,p.line_user_id AS payer
+         FROM expense_transaction e JOIN member p ON p.id=e.payer_member_id
+        WHERE e.public_id IN ('BAXKPA2R','BAXKPB2R','BAXKPC2R') ORDER BY e.public_id`,
+    );
+    expect(state.rows).toEqual([
+      { public_id: "BAXKPA2R", scope: "shared", payer: "U-mei" },
+      { public_id: "BAXKPB2R", scope: "shared", payer: "U-mei" },
+      { public_id: "BAXKPC2R", scope: "personal", payer: "U-ming" },
+    ]);
+    const reply = await pool.query<{ alt_text: string }>(
+      "SELECT payload_json->'messages'->0->>'altText' AS alt_text FROM outbox_message WHERE source_webhook_event_id='E-bulk-payer'",
+    );
+    expect(reply.rows[0]?.alt_text).toContain("BAXKPA2R");
+    expect(reply.rows[0]?.alt_text).toContain("BAXKPB2R");
+    expect(reply.rows[0]?.alt_text).not.toContain("BAXKPC2R");
+    const audits = await pool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM transaction_event WHERE source_webhook_event_id='E-bulk-payer'",
+    );
+    expect(audits.rows[0]?.count).toBe("2");
+
+    await insertTextEvent("E-personal-payer-denied", "M-personal-payer-denied", "改 #BAXKPC2R 付款人 對方");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "rejected" });
   });
 
   it("lets each member set a unique nickname used by later cards and reports", async () => {

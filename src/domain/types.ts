@@ -80,6 +80,7 @@ export interface ParsedExpense {
   readonly amountMinor: number;
   readonly currency: "TWD";
   readonly scope: ExpenseScope;
+  readonly payer: "self" | "partner";
   /** Calendar date in the ledger timezone, formatted as YYYY-MM-DD. */
   readonly occurredOn: string;
   /** Exact UTC instant for DB timestamptz, or null when only a date is known. */
@@ -116,6 +117,7 @@ export const EXPENSE_PARSE_ERROR_CODES = [
   "CONFLICTING_MEAL",
   "CONFLICTING_CATEGORY",
   "MEAL_CATEGORY_CONFLICT",
+  "PAYER_REQUIRES_SHARED",
   "INVALID_TAG",
   "TOO_MANY_CUSTOM_TAGS",
   "INVALID_EVENT_TIMESTAMP",

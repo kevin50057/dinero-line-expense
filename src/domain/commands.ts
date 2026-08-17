@@ -12,6 +12,7 @@ export type LedgerCommand =
   | { readonly kind: "ranking"; readonly filter: Exclude<CommandFilter, { readonly kind: "tag" }> }
   | { readonly kind: "mode"; readonly scope: "shared" | "personal" | null }
   | { readonly kind: "nickname"; readonly value: string | null }
+  | { readonly kind: "bulk_payer"; readonly period: "today" | "yesterday" | "day_before_yesterday"; readonly target: "self" | "partner" }
   | { readonly kind: "update"; readonly publicId: string; readonly change: UpdateChange }
   | { readonly kind: "tags"; readonly operation: "add" | "remove"; readonly publicId: string; readonly tags: readonly string[] }
   | { readonly kind: "void" | "restore"; readonly publicId: string }
@@ -110,6 +111,16 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   if (text === "目前模式") return command({ kind: "mode", scope: null });
   if (text === "切換共同模式" || text === "共同模式") return command({ kind: "mode", scope: "shared" });
   if (text === "切換個人模式" || text === "個人模式") return command({ kind: "mode", scope: "personal" });
+
+  match = /^(今天|今日|昨天|昨日|前天)\s*(?:全部\s*)?(我|自己|對方)\s*(?:全付|全部付|付|付款)$/u.exec(text);
+  if (match) {
+    const period = match[1] === "今天" || match[1] === "今日"
+      ? "today"
+      : match[1] === "前天"
+        ? "day_before_yesterday"
+        : "yesterday";
+    return command({ kind: "bulk_payer", period, target: match[2] === "對方" ? "partner" : "self" });
+  }
 
   match = /^(共同|個人|全部)月報$/u.exec(text);
   if (match) {
@@ -252,6 +263,9 @@ function parseChange(field: string, raw: string): UpdateChange | string {
   }
   if (field === "付款人" || field === "所有人") {
     if (raw.length === 0 || [...raw].length > 50) return `${field}必須使用帳本成員名稱。`;
+    if (field === "付款人" && !["我", "自己", "本人", "對方", "另一位", "另一半"].includes(raw)) {
+      return "付款人只能改成「我」或「對方」。";
+    }
     return { field: field === "付款人" ? "payer" : "owner", value: raw };
   }
   if (field === "日期") {

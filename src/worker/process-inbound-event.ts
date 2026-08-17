@@ -381,10 +381,20 @@ async function processMessage(
   }
 
   const expense = await applyCategoryKnowledge(client, event.ledger_id, parsed.value);
+  const payer = expense.payer === "partner"
+    ? await loadPairedPartner(client, event.ledger_id, identity.member_id)
+    : { id: identity.member_id, displayName: identity.display_name };
+  if (payer === null) {
+    await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
+      "expense_create_rejected", "指定對方付款只適用於剛好兩位已配對成員的共同帳本。");
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
   const saved = await insertExpenseWithCollisionRetry(
     client,
     event,
     identity,
+    payer.id,
     expense,
     payload.message.text,
     publicIdFactory,
@@ -400,7 +410,7 @@ async function processMessage(
     formatSavedExpenseReply({
       publicId: saved.publicId,
       expense,
-      payerDisplayName: identity.display_name,
+      payerDisplayName: payer.displayName,
     }),
   );
   await finish(client, event, "applied");
@@ -506,6 +516,7 @@ async function insertExpenseWithCollisionRetry(
   client: PoolClient,
   event: ClaimedEvent,
   identity: LedgerMember,
+  payerMemberId: string,
   expense: ParsedExpense,
   sourceText: string,
   makePublicId: () => string,
@@ -523,16 +534,16 @@ async function insertExpenseWithCollisionRetry(
          occurred_time_precision, source_webhook_event_id, source_message_id,
          source_text
        )
-       SELECT $1::uuid, $2::text, $3::uuid, $3::uuid,
-              CASE WHEN $4::expense_scope = 'personal' THEN $3::uuid ELSE NULL END,
-              $4::expense_scope, $5::bigint, $6::text, $7::text, $8::date,
-              $9::occurred_date_source, $10::timestamptz,
-              $11::occurred_time_source, $12::time_precision,
-              $13::text, $14::text, $15::text
+       SELECT $1::uuid, $2::text, $3::uuid, $4::uuid,
+              CASE WHEN $5::expense_scope = 'personal' THEN $3::uuid ELSE NULL END,
+              $5::expense_scope, $6::bigint, $7::text, $8::text, $9::date,
+              $10::occurred_date_source, $11::timestamptz,
+              $12::occurred_time_source, $13::time_precision,
+              $14::text, $15::text, $16::text
        ON CONFLICT (ledger_id, public_id) DO NOTHING
        RETURNING id::text AS id`,
       [
-        event.ledger_id, publicId, identity.member_id, expense.scope,
+        event.ledger_id, publicId, identity.member_id, payerMemberId, expense.scope,
         expense.amountMinor, expense.currency, expense.description,
         expense.occurredOn, expense.occurredDateSource, expense.occurredAt,
         expense.occurredTimeSource, expense.occurredTimePrecision,
@@ -543,6 +554,21 @@ async function insertExpenseWithCollisionRetry(
     if (id !== undefined) return { id, publicId };
   }
   throw new Error("public_id_collision_limit_exceeded");
+}
+
+async function loadPairedPartner(
+  client: PoolClient,
+  ledgerId: string,
+  actorMemberId: string,
+): Promise<{ id: string; displayName: string } | null> {
+  const result = await client.query<{ id: string; display_name: string }>(
+    `SELECT id::text,display_name FROM member
+      WHERE ledger_id=$1 AND id<>$2 AND is_active ORDER BY created_at,id LIMIT 2`,
+    [ledgerId, actorMemberId],
+  );
+  return result.rows.length === 1
+    ? { id: result.rows[0]!.id, displayName: result.rows[0]!.display_name }
+    : null;
 }
 
 async function insertTypedTags(

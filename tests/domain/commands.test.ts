@@ -43,6 +43,9 @@ describe("parseLedgerCommand", () => {
     ["改 #K7M2Q9TX 金額 180", { kind: "update", publicId: "K7M2Q9TX", change: { field: "amount", value: 180 } }],
     ["改 #K7M2Q9TX 付款人 對方", { kind: "update", publicId: "K7M2Q9TX", change: { field: "payer", value: "對方" } }],
     ["改 #K7M2Q9TX 付款人 我", { kind: "update", publicId: "K7M2Q9TX", change: { field: "payer", value: "我" } }],
+    ["昨天 對方 全付", { kind: "bulk_payer", period: "yesterday", target: "partner" }],
+    ["昨天 全部 對方付", { kind: "bulk_payer", period: "yesterday", target: "partner" }],
+    ["前天我全付", { kind: "bulk_payer", period: "day_before_yesterday", target: "self" }],
     ["改 #K7M2Q9TX 標籤 #約會 #台南", { kind: "update", publicId: "K7M2Q9TX", change: { field: "tags", value: ["約會", "台南"] } }],
     ["改 #K7M2Q9TX 標籤 無", { kind: "update", publicId: "K7M2Q9TX", change: { field: "tags", value: [] } }],
     ["分類規則", { kind: "category_rules" }],
@@ -53,7 +56,7 @@ describe("parseLedgerCommand", () => {
     expect(parseLedgerCommand(input)).toEqual({ kind: "command", command: expected });
   });
 
-  it.each(["最近 0", "最近 21", "最近 五", "找", "搜尋 ", "設定暱稱", "設定暱稱 #小美", "切換 共同模式", "改 #K7M2Q9TX 金額 -1", "本月 不知道", "13月月報", "取消 150"])(
+  it.each(["最近 0", "最近 21", "最近 五", "找", "搜尋 ", "設定暱稱", "設定暱稱 #小美", "切換 共同模式", "改 #K7M2Q9TX 付款人 小美", "改 #K7M2Q9TX 金額 -1", "本月 不知道", "13月月報", "取消 150"])(
     "keeps malformed reserved input out of create: %s",
     (input) => expect(parseLedgerCommand(input).kind).toBe("invalid"),
   );

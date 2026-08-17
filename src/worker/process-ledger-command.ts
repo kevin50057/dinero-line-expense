@@ -132,6 +132,8 @@ export async function processLedgerCommand(
       return changeLedgerMode(client, actor, command.scope);
     case "nickname":
       return changeNickname(client, actor, command.value);
+    case "bulk_payer":
+      return changePeriodPayer(client, actor, event, command.period, command.target);
     case "void":
     case "restore":
       return withRefreshedDetail(client, actor, await changeStatus(client, actor, event, command.publicId, command.kind));
@@ -140,6 +142,69 @@ export async function processLedgerCommand(
     case "update":
       return withRefreshedDetail(client, actor, await updateExpense(client, actor, event, command.publicId, command.change));
   }
+}
+
+async function changePeriodPayer(
+  client: PoolClient,
+  actor: CommandActor,
+  event: CommandEvent,
+  period: "today" | "yesterday" | "day_before_yesterday",
+  target: "self" | "partner",
+): Promise<LedgerCommandResult> {
+  const pair = await loadPaymentPair(client, actor);
+  if (pair === null) return rejected("這個功能只適用於剛好兩位已配對成員的帳本。");
+  const local = toZonedMinute(event.eventAt, actor.timezone);
+  if (local === null) return rejected("無法判定帳本日期，請稍後再試。");
+  const { start, end, title } = periodRange(local.date, period);
+  const payer = target === "self" ? pair.self : pair.partner;
+  const expenses = await client.query<{
+    id: string; public_id: string; description: string; amount_minor: string;
+    payer_member_id: string; payer_name: string;
+  }>(
+    `SELECT e.id::text,e.public_id,e.description,e.amount_minor::text,
+            e.payer_member_id::text,p.display_name AS payer_name
+       FROM expense_transaction e
+       JOIN member p ON p.id=e.payer_member_id AND p.ledger_id=e.ledger_id
+      WHERE e.ledger_id=$1 AND e.status='active' AND e.scope='shared'
+        AND e.occurred_on >= $2::date AND e.occurred_on < $3::date
+      ORDER BY e.occurred_on,e.occurred_at NULLS LAST,e.created_at,e.id
+      FOR UPDATE OF e`,
+    [actor.ledgerId, start, end],
+  );
+  const changed = expenses.rows.filter((row) => row.payer_member_id !== payer.id);
+  for (const row of changed) {
+    await client.query(
+      "UPDATE expense_transaction SET payer_member_id=$3,row_version=row_version+1 WHERE ledger_id=$1 AND id=$2",
+      [actor.ledgerId, row.id, payer.id],
+    );
+    await insertAudit(client, actor, event, row.id, "updated", ["payer"],
+      { payer: row.payer_name }, { payer: payer.name });
+  }
+  const unchanged = expenses.rows.length - changed.length;
+  const reply = changed.length === 0
+    ? `${title}沒有需要修改的共同支出；${expenses.rows.length} 筆付款人原本就已是${payer.name}。`
+    : [
+        `${title}共同支出付款人已改為${payer.name}：${changed.length} 筆`,
+        ...changed.map((row) => `#${row.public_id}｜${row.description}｜${money(row.amount_minor)}｜${row.payer_name} → ${payer.name}`),
+        ...(unchanged === 0 ? [] : [`另有 ${unchanged} 筆原本就是${payer.name}，未變更。`]),
+      ].join("\n");
+  return applied(reply, undefined, infoCard({
+    altText: reply,
+    kicker: "DINERO 批次付款人",
+    title: `${title}・${payer.name}付款`,
+    summary: `已修改 ${changed.length} 筆`,
+    rows: changed.slice(0, 20).map((row) => ({
+      label: `#${row.public_id}・${row.description}`,
+      value: money(row.amount_minor),
+      meta: `${row.payer_name} → ${payer.name}`,
+    })),
+    note: changed.length > 20
+      ? `另有 ${changed.length - 20} 筆已完成修改；可按下方按鈕查看當日共同紀錄。`
+      : unchanged > 0
+        ? `${unchanged} 筆原本就是${payer.name}，未變更。`
+        : "僅修改共同支出；個人支出完全不受影響。",
+    actions: [{ label: "查看共同紀錄", text: period === "today" ? "今天 共同" : period === "yesterday" ? "昨天 共同" : "前天 共同" }],
+  }));
 }
 
 async function changeNickname(
@@ -808,7 +873,18 @@ async function updateScope(client: PoolClient, actor: CommandActor, event: Comma
 
 async function updateMemberField(client: PoolClient, actor: CommandActor, event: CommandEvent, expense: ExpenseRow, field: "payer" | "owner", name: string) {
   if (field === "owner" && expense.scope !== "personal") return rejected("只有個人支出可以設定所有人。", expense.public_id);
-  const member = await resolveMemberReference(client, actor, name);
+  if (field === "payer" && expense.scope !== "shared") return rejected("只有共同支出可以修改付款人。", expense.public_id);
+  let member: { id: string; name: string } | null;
+  if (field === "payer") {
+    const pair = await loadPaymentPair(client, actor);
+    if (pair === null) return rejected("修改付款人只適用於剛好兩位已配對成員的帳本。", expense.public_id);
+    const normalized = name.normalize("NFKC").trim();
+    if (["我", "自己", "本人"].includes(normalized)) member = pair.self;
+    else if (["對方", "另一位", "另一半"].includes(normalized)) member = pair.partner;
+    else return rejected("付款人只能改成「我」或「對方」。", expense.public_id);
+  } else {
+    member = await resolveMemberReference(client, actor, name);
+  }
   if (member === null) return rejected("找不到唯一符合的帳本成員。", expense.public_id);
   const oldId = field === "payer" ? expense.payer_member_id : expense.personal_owner_member_id;
   const oldName = field === "payer" ? expense.payer_name : expense.owner_name;
@@ -1078,6 +1154,21 @@ async function resolveMemberReference(
     return result.rows.length === 1 ? result.rows[0]! : null;
   }
   return resolveMember(client, actor.ledgerId, normalized);
+}
+
+async function loadPaymentPair(
+  client: PoolClient,
+  actor: CommandActor,
+): Promise<{ self: { id: string; name: string }; partner: { id: string; name: string } } | null> {
+  const result = await client.query<{ id: string; name: string }>(
+    `SELECT id::text,display_name AS name FROM member
+      WHERE ledger_id=$1 AND is_active ORDER BY created_at,id`,
+    [actor.ledgerId],
+  );
+  if (result.rows.length !== 2) return null;
+  const self = result.rows.find((row) => row.id === actor.memberId);
+  const partner = result.rows.find((row) => row.id !== actor.memberId);
+  return self === undefined || partner === undefined ? null : { self, partner };
 }
 
 async function updateColumn(client: PoolClient, ledgerId: string, transactionId: string, column: "amount_minor" | "description" | "payer_member_id" | "personal_owner_member_id", value: string | number) {

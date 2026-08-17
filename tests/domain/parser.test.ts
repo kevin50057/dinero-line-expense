@@ -63,6 +63,15 @@ describe("parseExpenseMessage create semantics", () => {
     expect(expense.category.code).toBe("entertainment");
   });
 
+  it("parses a paired partner payer suffix only for shared expenses", () => {
+    expect(parseOk("共同 雞排 150元 對方付")).toMatchObject({
+      description: "雞排", amountMinor: 150, scope: "shared", payer: "partner",
+    });
+    expect(parseOk("奶茶 80 我付")).toMatchObject({ payer: "self" });
+    const result = parseExpenseMessage("個人 雞排 150 對方付", { eventTimestamp: NOON_EVENT });
+    expect(result).toMatchObject({ ok: false, error: { code: "PAYER_REQUIRES_SHARED" } });
+  });
+
   it("honors a non-shared ledger default while explicit scope still wins", () => {
     const bare = parseExpenseMessage("電影 320", {
       eventTimestamp: NOON_EVENT,
