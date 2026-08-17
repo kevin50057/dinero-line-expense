@@ -17,6 +17,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:migrate": "tsx --env-file=.env scripts/migrate.ts",
+    "service:install": "npm run build && tsx scripts/install-launch-agents.ts",
     "line:bootstrap": "tsx --env-file=.env scripts/capture-line-identities.ts",
     "line:finalize": "tsx --env-file=.env scripts/finalize-line-bootstrap.ts",
     "catalog:sync": "tsx --env-file=.env scripts/sync-product-catalog.ts",

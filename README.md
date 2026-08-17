@@ -5,7 +5,7 @@
 ## 目前功能
 
 - 個人使用者可直接私訊記帳，不必配對；第一則文字訊息會自動建立隔離的個人帳本。
-- 每個 LINE 群組可自助建立一個資料隔離的兩人帳本；第一位輸入 `建立配對`，第二位輸入 `配對`。
+- 每個 LINE 群組可自助建立一個資料隔離的兩人帳本；第一位建立邀請、第二位提出申請，再由第一位確認指定申請碼。
 - 兩人可自行解除配對，但必須一人提出 `解除配對`、另一人明確 `同意解除`；單方無法直接拆除帳本。
 - 預設是個人模式，`牛肉麵 150` 會建立傳送者的個人支出；約會時可切換共同模式。
 - `個人 咖啡 80` 建立傳送者的個人支出；它跟著 LINE 使用者，無論從私訊或群組查詢都是同一份個人歷史，配對對方無法用自己的指令取得或修改。
@@ -55,7 +55,7 @@ LINE：直接編輯原始記帳訊息
 
 LINE：Bot 加入新的記帳群組
   → 自動建立獨立帳本
-  → 第一位「建立配對」，第二位「配對」
+  → 第一位「建立配對」、第二位「配對」、第一位核對後確認
   → 群組與私訊的默認查詢都是發送者同一份個人帳
   → 只有明確「共同」或「全部」才會取用目前配對的共同帳
   → 「配對狀態」可查看身份；解除配對採雙方確認
@@ -102,6 +102,25 @@ npm run web:build
 服務會驗證 raw webhook 簽章，以 transactional inbox 去重，背景執行新增、查詢、修改、取消、還原與 audit，再透過 outbox 回覆 LINE。`/healthz` 是程序存活，`/readyz` 會檢查 PostgreSQL。
 
 `DELETION_JOURNAL_DIRECTORY` 必須放在與 PostgreSQL 不同 recovery unit 的持久儲存；這是防止舊備份還原後讓已收回訊息復活。開放實際流量前也必須用 production HTTPS、DB TLS、加密備份與監控。
+
+### 這台 Mac 的常駐服務
+
+開發試用可安裝兩個 macOS LaunchAgent：Server 與 Cloudflare quick tunnel。安裝器會依目前 workspace、Node 與 `cloudflared` 路徑產生本機 plist，不會把 `.env` 密鑰寫入 plist：
+
+```bash
+brew install cloudflared
+npm run service:install
+```
+
+兩個 job 都設定 `KeepAlive`。Quick tunnel 每次重連會取得新網址；supervisor 會先透過 LINE 官方 webhook test 驗證新端點，成功後才使用 channel access token 更新 Messaging API webhook URL，避免留下失效網址。
+
+```bash
+launchctl print "gui/$(id -u)/com.dinero.line-bot.server"
+launchctl print "gui/$(id -u)/com.dinero.line-bot.tunnel"
+tail -f .local/logs/server.stderr.log .local/logs/tunnel.stderr.log
+```
+
+LaunchAgent 仍依賴這台 Mac 已登入、未休眠且網路正常。正式商業服務應改用有固定網域與監控的 production hosting／named tunnel；quick tunnel 只適合目前試用階段。
 
 ## 驗證
 

@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.dinero.line-bot.tunnel</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_PATH__</string>
+    <string>--env-file=__WORKSPACE__/.env</string>
+    <string>__WORKSPACE__/dist/runtime/managed-line-tunnel.js</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>CLOUDFLARED_PATH</key>
+    <string>__CLOUDFLARED_PATH__</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>__WORKSPACE__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>__WORKSPACE__/.local/logs/tunnel.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>__WORKSPACE__/.local/logs/tunnel.stderr.log</string>
+</dict>
+</plist>
