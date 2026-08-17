@@ -166,7 +166,7 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
     expect(result.rows[0]?.count).toBe("1");
   });
 
-  it("routes a one-to-one message to the member's configured ledger", async () => {
+  it("upgrades an existing couple-only member to a separate private ledger on first authorized DM", async () => {
     const inbox = testInbox();
     const privateMessage = {
       ...textEvent("E-private", "M-private", "咖啡 80"),
@@ -175,14 +175,25 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
 
     await inbox.acceptBatch("U-bot", [acceptedEvent(privateMessage)]);
 
-    const result = await pool.query<{ ledger_id: string; payload_json: unknown }>(
-      `SELECT ledger_id::text, payload_json FROM inbound_event
-        WHERE webhook_event_id = 'E-private'`,
+    const result = await pool.query<{ ledger_id: string; route: string; kind: string; payload_json: unknown }>(
+      `SELECT event.ledger_id::text,ledger.line_group_id AS route,member.membership_kind AS kind,
+              event.payload_json
+         FROM inbound_event event
+         JOIN ledger ON ledger.id=event.ledger_id
+         JOIN member ON member.ledger_id=ledger.id AND member.line_user_id='U-private'
+        WHERE event.webhook_event_id = 'E-private'`,
     );
     expect(result.rows[0]).toMatchObject({
-      ledger_id: ledgerId,
+      route: "user:U-private",
+      kind: "personal",
       payload_json: { source: { chatType: "user", userId: "U-private" } },
     });
+    expect(result.rows[0]?.ledger_id).not.toBe(ledgerId);
+    const coupleStillActive = await pool.query<{ active: boolean }>(
+      "SELECT is_active AS active FROM member WHERE ledger_id=$1 AND line_user_id='U-private'",
+      [ledgerId],
+    );
+    expect(coupleStillActive.rows[0]?.active).toBe(true);
   });
 
   it("ignores an unknown one-to-one sender without persisting content", async () => {

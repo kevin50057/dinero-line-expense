@@ -120,13 +120,15 @@ export class PostgresLineEventInbox implements LineEventInbox {
         let ledgerId = ledgerIdsBySource.get(sourceKey);
         if (ledgerId === undefined) {
           if (source.type === "user" && source.userId !== undefined) {
-            const privateLedgerId = await resolvePrivateLedgerId(client, source.userId);
-            if (privateLedgerId !== null) {
-              ledgerId = privateLedgerId;
+            const personalLedgerId = await resolvePersonalLedgerId(client, source.userId);
+            if (personalLedgerId !== null) {
+              ledgerId = personalLedgerId;
             } else if (acceptedEvent.authorization.authorized && isPrivateSelfServiceText(acceptedEvent.event)) {
               ledgerId = await provisionPrivateLedgerId(client, source.userId);
             } else {
-              continue;
+              const coupleLedgerId = await resolveCoupleLedgerId(client, source.userId);
+              if (coupleLedgerId === null) continue;
+              ledgerId = coupleLedgerId;
             }
           } else {
             const groupId = source.groupId;
@@ -280,7 +282,7 @@ function isUnroutableUnauthorizedEvent(event: AcceptedLineEvent): boolean {
   );
 }
 
-async function resolvePrivateLedgerId(
+async function resolvePersonalLedgerId(
   client: PoolClient,
   lineUserId: string,
 ): Promise<string | null> {
@@ -290,8 +292,7 @@ async function resolvePrivateLedgerId(
       JOIN member m ON m.ledger_id = l.id
       WHERE m.line_user_id = $1
         AND m.is_active
-      ORDER BY CASE m.membership_kind WHEN 'personal' THEN 0 ELSE 1 END,
-               m.created_at, m.id
+        AND m.membership_kind = 'personal'
       LIMIT 1`,
     [lineUserId],
   );
@@ -300,6 +301,17 @@ async function resolvePrivateLedgerId(
     return null;
   }
   return ledgerId;
+}
+
+async function resolveCoupleLedgerId(client: PoolClient, lineUserId: string): Promise<string | null> {
+  const result = await client.query<{ id: string }>(
+    `SELECT l.id::text AS id
+       FROM ledger l JOIN member m ON m.ledger_id=l.id
+      WHERE m.line_user_id=$1 AND m.is_active AND m.membership_kind='couple'
+      LIMIT 1`,
+    [lineUserId],
+  );
+  return result.rows[0]?.id ?? null;
 }
 
 function isPrivateSelfServiceText(event: AcceptedLineEvent["event"]): boolean {
