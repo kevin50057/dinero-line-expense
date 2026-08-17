@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   helpCards,
   infoCard,
+  pairingInvitationCard,
+  pairingJoinRequestCard,
   pairingStatusCard,
   standalonePersonalCard,
   unpairConsentCard,
@@ -96,6 +98,26 @@ describe("LINE Flex card builders", () => {
     expect(JSON.stringify(status)).toContain('"label":"取消申請"');
     expect(JSON.stringify(consent)).toContain('"label":"同意解除"');
     expect(JSON.stringify(consent)).toContain('"color":"#FFFFFF"');
+  });
+
+  it("builds safe pending-invitation and candidate-confirmation cards", () => {
+    const invitation = pairingInvitationCard({
+      altText: "等待安全確認",
+      expiresAt: "2026/08/18 14:00",
+      viewerRole: "candidate",
+      requestCode: "CANDD456",
+    });
+    const confirmation = pairingJoinRequestCard({
+      altText: "有人提出配對申請",
+      requestCode: "CANDD456",
+      candidateName: "這則訊息的發送者",
+      expiresAt: "2026/08/18 14:00",
+    });
+    expect(parseLineReplyPayload({ messages: [invitation] })).toEqual({ messages: [invitation] });
+    expect(parseLineReplyPayload({ messages: [confirmation] })).toEqual({ messages: [confirmation] });
+    expect(JSON.stringify(invitation)).toContain("取消配對申請 CANDD456");
+    expect(JSON.stringify(confirmation)).toContain("確認配對 CANDD456");
+    expect(JSON.stringify(confirmation)).toContain("拒絕配對 CANDD456");
   });
 
   it("builds a valid standalone personal-mode card", () => {

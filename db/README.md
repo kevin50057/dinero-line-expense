@@ -59,6 +59,8 @@ Seed 會明確設定：
 
 `011_user_scoped_personal_history.sql` 把個人帳的邏輯邊界改為 LINE user：私訊與群組可安全聚合同一所有人的 personal transactions，而對方的個人帳、舊配對 shared history 仍不可見。此 migration 也將 public ID 設為全域唯一、建立 user-history 索引、同步已選暱稱，並讓 DB mutation guard 允許本人維護解除配對前的 personal history，但不開放舊 shared history。
 
+`012_safe_pairing_invitations.sql` 將配對改成安全的三步驟流程：建立 24 小時邀請、候選人提出獨立申請、邀請建立者確認指定申請碼。等待狀態不建立 active member，因此不會誤判完成或卡住跨群組配對；建立者與申請者都能取消，逾時自動失效。同一邀請可容納多筆候選申請，第三人不能先搶先贏。資料庫 trigger 另會鎖定 ledger 並拒絕第三位 active couple member；舊版單人成員會自動轉成不占名額的 pending invitation。
+
 ## 分類知識表
 
 `004_category_knowledge.sql` 建立 `category_knowledge_rule`，並載入台灣常見消費的系統規則。分類時依序採用帳本專屬精確規則、系統 exact／contains 規則，再回退到程式內的保守分類器。每次命中會更新 `hit_count` 與 `last_matched_at`。

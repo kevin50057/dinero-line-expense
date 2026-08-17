@@ -277,7 +277,15 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
       ...textEvent("E-public-pairing-status", "M-public-pairing-status", "配對狀態"),
       source: { type: "group" as const, groupId: "C-new-couple", userId: "U-new" },
     };
-    await inbox.acceptBatch("U-bot", [pairing, status].map((event) => ({
+    const confirm = {
+      ...textEvent("E-public-pairing-confirm", "M-public-pairing-confirm", "確認配對 CANDD456"),
+      source: { type: "group" as const, groupId: "C-new-couple", userId: "U-new" },
+    };
+    const cancel = {
+      ...textEvent("E-public-pairing-cancel", "M-public-pairing-cancel", "取消配對申請 CANDD456"),
+      source: { type: "group" as const, groupId: "C-new-couple", userId: "U-new" },
+    };
+    await inbox.acceptBatch("U-bot", [pairing, status, confirm, cancel].map((event) => ({
       event,
       authorization: { authorized: false as const, reason: "member_not_allowed" as const },
     })));
@@ -292,11 +300,11 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
          JOIN inbound_event ie ON ie.ledger_id=l.id
         WHERE l.line_group_id='C-new-couple'`,
     );
-    expect(result.rows[0]).toEqual({
-      ledger_count: "1",
-      tag_count: "14",
-      texts: ["建立配對", "配對狀態"],
-    });
+    expect(result.rows[0]).toMatchObject({ ledger_count: "1", tag_count: "14" });
+    expect(result.rows[0]?.texts).toHaveLength(4);
+    expect(result.rows[0]?.texts).toEqual(expect.arrayContaining([
+      "建立配對", "配對狀態", "確認配對 CANDD456", "取消配對申請 CANDD456",
+    ]));
   });
 
   it("provisions a private personal ledger without pairing and prefers it over a couple membership", async () => {

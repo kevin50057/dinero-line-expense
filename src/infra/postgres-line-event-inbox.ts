@@ -263,11 +263,16 @@ async function isActiveLedgerMember(client: PoolClient, ledgerId: string, lineUs
 }
 
 function isOnboardingRequest(event: AcceptedLineEvent["event"]): boolean {
-  return event.kind === "message" && event.message?.type === "text"
-    && typeof event.message.text === "string"
-    && ["配對", "建立配對", "開始配對", "配對狀態", "說明", "使用說明", "配對說明"]
-      .includes(event.message.text.normalize("NFKC").trim())
-    && event.source.userId !== undefined;
+  if (event.kind !== "message" || event.message?.type !== "text"
+      || typeof event.message.text !== "string" || event.source.userId === undefined) {
+    return false;
+  }
+  const text = event.message.text.normalize("NFKC").trim().replace(/\s+/gu, " ");
+  return [
+    "配對", "建立配對", "開始配對", "配對狀態", "取消配對設定",
+    "說明", "使用說明", "配對說明",
+  ].includes(text)
+    || /^(?:確認配對|拒絕配對|取消配對申請)\s+#?[0-9A-HJKMNP-TV-Z]{8}$/iu.test(text);
 }
 
 function isUnroutableUnauthorizedEvent(event: AcceptedLineEvent): boolean {

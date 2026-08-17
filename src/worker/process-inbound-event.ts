@@ -8,6 +8,8 @@ import {
 import { generatePublicId } from "../application/public-id.js";
 import {
   pairingGuideCard,
+  pairingInvitationCard,
+  pairingJoinRequestCard,
   pairingStatusCard,
   standalonePersonalCard,
   unpairConsentCard,
@@ -37,6 +39,7 @@ export type ProcessInboundEventResult =
 
 export interface ProcessInboundEventOptions {
   readonly generatePublicId?: () => string;
+  readonly generatePairingCode?: () => string;
   readonly appendDeletionJournal?: (
     entry: DeletionJournalEntry,
   ) => Promise<void>;
@@ -81,6 +84,14 @@ interface TextPayload {
 }
 
 type PairingManagementAction = "status" | "request_unpair" | "confirm_unpair" | "reject_unpair" | "cancel_unpair";
+
+type PairingSetupAction =
+  | { readonly kind: "create" }
+  | { readonly kind: "join" }
+  | { readonly kind: "cancel_invitation" }
+  | { readonly kind: "confirm_join"; readonly requestCode: string }
+  | { readonly kind: "reject_join"; readonly requestCode: string }
+  | { readonly kind: "cancel_join"; readonly requestCode: string };
 
 interface LifecyclePayload {
   destination: string;
@@ -147,7 +158,8 @@ async function processLifecycleEvent(
   if (payload.event.kind === "join") {
     const reply = [
       "歡迎使用 DINERO 兩人記帳！",
-      "第一位請輸入「建立配對」，第二位再輸入「配對」。",
+      "第一位輸入「建立配對」，第二位輸入「配對」提出申請。",
+      "第一位核對發送者後按「確認配對」，才會正式完成。",
       "完成後輸入「設定暱稱 你的名字」。",
       "預設是個人模式；約會時再輸入「切換共同模式」。",
       "配對後可用「配對狀態」查看；解除必須雙方同意。",
@@ -281,40 +293,37 @@ async function processMessage(
     return processedResult(event, "rejected");
   }
 
+  const normalizedText = payload.message.text.normalize("NFKC").trim();
+  const setupAction = parsePairingSetupAction(normalizedText);
+  if (setupAction !== null) {
+    return processPairingSetup(
+      client,
+      event,
+      payload.source.userId,
+      payload.source.chatType,
+      setupAction,
+      payload.replyTokenCiphertext,
+      options.generatePairingCode ?? (() => generatePublicId()),
+    );
+  }
+
   let identity = await loadIdentity(client, event.ledger_id, payload.source.userId);
   if (identity === null) {
-    const normalizedText = payload.message.text.normalize("NFKC").trim();
-    if (isPairingCommand(normalizedText)) {
-      return pairLedgerMember(client, event, payload.source.userId, payload.replyTokenCiphertext);
-    }
     if (parsePairingManagementAction(normalizedText) === "status") {
-      const destination = await loadLedgerDestination(client, event.ledger_id);
-      const reply = "你目前沒有有效配對。請在兩人群組由第一位輸入「建立配對」，第二位輸入「配對」。";
-      await enqueueReply(client, event, destination, payload.replyTokenCiphertext,
-        "member_pairing_result", reply, pairingGuideCard(reply));
-      await finish(client, event, "noop");
-      return processedResult(event, "noop");
+      return processPendingPairingStatus(
+        client,
+        event,
+        payload.source.userId,
+        payload.source.chatType,
+        payload.replyTokenCiphertext,
+      );
     }
     const destination = await loadLedgerDestination(client, event.ledger_id);
-    const reply = "你還沒完成配對。第一位請輸入「建立配對」，第二位輸入「配對」。";
+    const reply = "你還沒完成配對。第一位建立邀請、第二位提出申請，再由第一位確認。";
     await enqueueReply(client, event, destination, payload.replyTokenCiphertext,
       "ledger_onboarding", reply, pairingGuideCard(reply));
     await finish(client, event, "rejected");
     return processedResult(event, "rejected");
-  }
-
-  if (isPairingCommand(payload.message.text.normalize("NFKC").trim())) {
-    if (identity.membership_kind === "personal") {
-      const reply = "你現在就是個人模式，不需要配對也能直接記帳。若要共同記帳，請建立兩人 LINE 群組並把機器人加入。";
-      await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
-        "member_pairing_result", reply, standalonePersonalCard(reply));
-      await finish(client, event, "noop");
-      return processedResult(event, "noop");
-    }
-    await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
-      "member_pairing_result", `你已經完成配對，帳本身份是「${identity.display_name}」。`);
-    await finish(client, event, "noop");
-    return processedResult(event, "noop");
   }
 
   const pairingAction = parsePairingManagementAction(payload.message.text);
@@ -533,79 +542,655 @@ async function applyCategoryKnowledge(
   };
 }
 
-async function pairLedgerMember(
+interface PendingPairingInvitation {
+  id: string;
+  invited_by_line_user_id: string;
+  expires_at: Date;
+}
+
+interface PairingJoinRequest {
+  id: string;
+  request_code: string;
+  candidate_line_user_id: string;
+  status: "pending" | "confirmed" | "rejected" | "cancelled" | "expired";
+  expires_at: Date;
+  invitation_id: string;
+  invitation_status: "pending" | "completed" | "cancelled" | "expired";
+  invited_by_line_user_id: string;
+}
+
+function parsePairingSetupAction(input: string): PairingSetupAction | null {
+  const text = input.normalize("NFKC").trim().replace(/\s+/gu, " ");
+  if (text === "建立配對" || text === "開始配對") return { kind: "create" };
+  if (text === "配對") return { kind: "join" };
+  if (text === "取消配對設定") return { kind: "cancel_invitation" };
+  const coded = /^(確認配對|拒絕配對|取消配對申請)\s+#?([0-9A-HJKMNP-TV-Z]{8})$/iu.exec(text);
+  if (coded === null) return null;
+  const requestCode = coded[2]!.toUpperCase();
+  if (coded[1] === "確認配對") return { kind: "confirm_join", requestCode };
+  if (coded[1] === "拒絕配對") return { kind: "reject_join", requestCode };
+  return { kind: "cancel_join", requestCode };
+}
+
+async function processPairingSetup(
   client: PoolClient,
   event: ClaimedEvent,
   lineUserId: string,
+  chatType: "group" | "user",
+  action: PairingSetupAction,
+  replyTokenCiphertext: string | undefined,
+  generatePairingCode: () => string,
+): Promise<ProcessInboundEventResult> {
+  const ledger = await client.query<{ line_group_id: string; timezone: string }>(
+    "SELECT line_group_id,timezone FROM ledger WHERE id=$1 FOR UPDATE",
+    [event.ledger_id],
+  );
+  const row = ledger.rows[0];
+  if (row === undefined) throw new Error("pairing_ledger_missing");
+  if (chatType === "user") {
+    const reply = "個人記帳不需要配對。若要使用共同模式，請建立 LINE 群組、加入機器人，再從群組輸入「建立配對」。";
+    await enqueueReply(client, event, row.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply, standalonePersonalCard(reply));
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+
+  await expirePairingSetup(client, event.ledger_id);
+
+  if (action.kind === "create") {
+    return createPairingInvitation(
+      client, event, lineUserId, row.line_group_id, row.timezone, replyTokenCiphertext,
+    );
+  }
+  if (action.kind === "join") {
+    return submitPairingJoinRequest(
+      client, event, lineUserId, row.line_group_id, row.timezone,
+      replyTokenCiphertext, generatePairingCode,
+    );
+  }
+  if (action.kind === "cancel_invitation") {
+    return cancelPairingInvitation(
+      client, event, lineUserId, row.line_group_id, replyTokenCiphertext,
+    );
+  }
+  return resolvePairingJoinRequest(
+    client, event, lineUserId, row.line_group_id, row.timezone,
+    action, replyTokenCiphertext,
+  );
+}
+
+async function createPairingInvitation(
+  client: PoolClient,
+  event: ClaimedEvent,
+  lineUserId: string,
+  destination: string,
+  timezone: string,
   replyTokenCiphertext: string | undefined,
 ): Promise<ProcessInboundEventResult> {
-  const ledger = await client.query<{ line_group_id: string }>(
-    "SELECT line_group_id FROM ledger WHERE id=$1 FOR UPDATE",
-    [event.ledger_id],
-  );
-  const destination = ledger.rows[0]?.line_group_id ?? null;
-  const members = await client.query<{ count: string }>(
-    `SELECT count(*)::text AS count FROM member
-      WHERE ledger_id=$1 AND is_active AND membership_kind='couple'`,
-    [event.ledger_id],
-  );
-  const memberCount = Number(members.rows[0]?.count ?? 0);
-  if (memberCount >= 2) {
-    await enqueueReply(client, event, destination, replyTokenCiphertext,
-      "member_pairing_result", "這個帳本目前無法接受新的配對成員。若要更換成員，請由帳本管理者處理。");
-    await finish(client, event, "rejected");
-    return processedResult(event, "rejected");
+  const active = await loadActiveCoupleMembership(client, lineUserId);
+  if (active !== null) {
+    const currentCount = active.ledger_id === event.ledger_id
+      ? await activeCoupleMemberCount(client, event.ledger_id)
+      : 0;
+    if (active.ledger_id === event.ledger_id && currentCount === 1) {
+      await client.query(
+        `UPDATE member SET is_active=false,updated_at=clock_timestamp()
+          WHERE ledger_id=$1 AND line_user_id=$2 AND is_active AND membership_kind='couple'`,
+        [event.ledger_id, lineUserId],
+      );
+    } else {
+      const reply = active.ledger_id === event.ledger_id
+        ? "你們已經完成配對，不需要再次建立。輸入「配對狀態」即可查看。"
+        : "你已經有一組有效配對；等待中的邀請不會卡住帳號，但完成的配對必須先由雙方解除。";
+      await enqueueReply(client, event, destination, replyTokenCiphertext,
+        "member_pairing_result", reply);
+      await finish(client, event, "noop");
+      return processedResult(event, "noop");
+    }
   }
-  const existing = await client.query<{ line_group_id: string }>(
-    `SELECT l.line_group_id
-       FROM member m JOIN ledger l ON l.id=m.ledger_id
-      WHERE m.line_user_id=$1 AND m.is_active AND m.membership_kind='couple'`,
-    [lineUserId],
-  );
-  if (existing.rowCount !== 0) {
+
+  const existing = await loadPendingPairingInvitation(client, event.ledger_id);
+  if (existing !== null) {
+    const isInviter = existing.invited_by_line_user_id === lineUserId;
+    const pendingCount = await pendingJoinRequestCount(client, existing.id);
+    const reply = isInviter
+      ? `配對邀請仍在等待中，期限到 ${formatPairingTime(existing.expires_at, timezone)}；目前有 ${pendingCount} 位待確認。`
+      : "這個群組已有等待中的配對邀請。若你是受邀者，請輸入「配對」提出申請；只有建立者能確認。";
     await enqueueReply(client, event, destination, replyTokenCiphertext,
-      "member_pairing_result", "這個 LINE 帳號已經在另一組有效配對中，不能同時加入兩本帳。解除原配對後才能重新加入。");
-    await finish(client, event, "rejected");
-    return processedResult(event, "rejected");
+      "member_pairing_result", reply, pairingInvitationCard({
+        altText: reply,
+        expiresAt: formatPairingTime(existing.expires_at, timezone),
+        viewerRole: isInviter ? "inviter" : "observer",
+        ...(isInviter ? { pendingCandidateCount: pendingCount } : {}),
+      }));
+    await finish(client, event, "noop");
+    return processedResult(event, "noop");
   }
-  const inserted = await client.query(
-    `INSERT INTO member (ledger_id,line_user_id,display_name,command_alias,membership_kind)
-     SELECT $1::uuid,$2::text,COALESCE(candidate.display_name,'新成員'),
-            candidate.display_name,'couple'
-       FROM (SELECT (
-         SELECT personal.display_name
-           FROM member personal
-          WHERE personal.line_user_id=$2 AND personal.membership_kind='personal'
-            AND personal.is_active
-            AND personal.display_name NOT IN ('我','新成員','另一半')
-            AND NOT EXISTS (
-              SELECT 1 FROM member other
-               WHERE other.ledger_id=$1 AND other.is_active
-                 AND (lower(btrim(other.display_name))=lower(btrim(personal.display_name))
-                   OR lower(btrim(other.command_alias))=lower(btrim(personal.display_name)))
-            )
-          ORDER BY personal.created_at,personal.id LIMIT 1
-       ) AS display_name) candidate
-     ON CONFLICT DO NOTHING`,
+
+  const inserted = await client.query<{ expires_at: Date }>(
+    `INSERT INTO pairing_invitation (ledger_id,invited_by_line_user_id)
+     VALUES ($1,$2) RETURNING expires_at`,
     [event.ledger_id, lineUserId],
   );
-  if (inserted.rowCount !== 1) {
-    await enqueueReply(client, event, destination, replyTokenCiphertext,
-      "member_pairing_result", "這個 LINE 帳號已有帳本身份，但目前不是啟用狀態。請由帳本管理者處理。");
-    await finish(client, event, "rejected");
-    return processedResult(event, "rejected");
-  }
-  const reply = memberCount === 0
-    ? "已建立配對！你是第一位成員。請先輸入「設定暱稱 你的名字」，再請另一位在這個群組輸入「配對」。"
-    : "配對成功！兩人帳本已可使用。請輸入「設定暱稱 你的名字」；之後可直接輸入「牛肉麵 150」記個人帳，約會時再切換共同模式。";
+  const expiresAt = inserted.rows[0]!.expires_at;
+  const reply = `已建立 24 小時配對邀請。請對方在這個群組輸入「配對」；收到申請後，仍要由你親自確認。`;
   await enqueueReply(client, event, destination, replyTokenCiphertext,
-    "member_pairing_result", reply);
+    "member_pairing_result", reply, pairingInvitationCard({
+      altText: reply,
+      expiresAt: formatPairingTime(expiresAt, timezone),
+      viewerRole: "inviter",
+      pendingCandidateCount: 0,
+    }));
   await finish(client, event, "applied");
   return processedResult(event, "applied");
 }
 
-function isPairingCommand(text: string): boolean {
-  return text === "配對" || text === "建立配對" || text === "開始配對";
+async function submitPairingJoinRequest(
+  client: PoolClient,
+  event: ClaimedEvent,
+  lineUserId: string,
+  destination: string,
+  timezone: string,
+  replyTokenCiphertext: string | undefined,
+  generatePairingCode: () => string,
+): Promise<ProcessInboundEventResult> {
+  const active = await loadActiveCoupleMembership(client, lineUserId);
+  if (active !== null) {
+    const reply = active.ledger_id === event.ledger_id
+      ? "你已經是這組配對的成員，不會再次加入。輸入「配對狀態」即可查看。"
+      : "你已經有一組有效配對，不能同時加入另一組；請先完成原配對的雙方解除。";
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+  const invitation = await loadPendingPairingInvitation(client, event.ledger_id);
+  if (invitation === null) {
+    const reply = "目前沒有有效的配對邀請。請由第一位先輸入「建立配對」。";
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply, pairingGuideCard(reply));
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+  if (invitation.invited_by_line_user_id === lineUserId) {
+    const reply = "不能和自己配對。你是這次邀請的建立者，請等待另一個 LINE 帳號提出申請。";
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply, pairingInvitationCard({
+        altText: reply,
+        expiresAt: formatPairingTime(invitation.expires_at, timezone),
+        viewerRole: "inviter",
+        pendingCandidateCount: await pendingJoinRequestCount(client, invitation.id),
+      }));
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+  const existing = await loadPendingJoinRequestForCandidate(client, invitation.id, lineUserId);
+  if (existing !== null) {
+    const reply = `你的配對申請 ${existing.request_code} 已送出，仍在等待邀請建立者確認。`;
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply, pairingInvitationCard({
+        altText: reply,
+        expiresAt: formatPairingTime(existing.expires_at, timezone),
+        viewerRole: "candidate",
+        requestCode: existing.request_code,
+      }));
+    await finish(client, event, "noop");
+    return processedResult(event, "noop");
+  }
+
+  const request = await insertPairingJoinRequestWithRetry(
+    client, invitation, lineUserId, generatePairingCode,
+  );
+  const candidateName = await loadPairingCandidateLabel(client, lineUserId);
+  const reply = `「${candidateName}」已提出配對申請 ${request.requestCode}；只有邀請建立者確認後才會完成。`;
+  await enqueueReply(client, event, destination, replyTokenCiphertext,
+    "member_pairing_result", reply, pairingJoinRequestCard({
+      altText: reply,
+      requestCode: request.requestCode,
+      candidateName,
+      expiresAt: formatPairingTime(request.expiresAt, timezone),
+    }));
+  await finish(client, event, "applied");
+  return processedResult(event, "applied");
+}
+
+async function cancelPairingInvitation(
+  client: PoolClient,
+  event: ClaimedEvent,
+  lineUserId: string,
+  destination: string,
+  replyTokenCiphertext: string | undefined,
+): Promise<ProcessInboundEventResult> {
+  const invitation = await loadPendingPairingInvitation(client, event.ledger_id);
+  if (invitation === null) {
+    const reply = "目前沒有等待中的配對設定，不需要取消。";
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply, pairingGuideCard(reply));
+    await finish(client, event, "noop");
+    return processedResult(event, "noop");
+  }
+  if (invitation.invited_by_line_user_id !== lineUserId) {
+    const reply = "只有這次邀請的建立者可以取消設定。你若已提出申請，可從「配對狀態」取消自己的申請。";
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+  await closePairingInvitation(client, invitation.id, "cancelled");
+  const reply = "配對設定已取消，所有待確認申請也已關閉。你可以留在個人模式，或隨時重新建立配對。";
+  await enqueueReply(client, event, destination, replyTokenCiphertext,
+    "member_pairing_result", reply, pairingGuideCard(reply));
+  await finish(client, event, "applied");
+  return processedResult(event, "applied");
+}
+
+async function resolvePairingJoinRequest(
+  client: PoolClient,
+  event: ClaimedEvent,
+  lineUserId: string,
+  destination: string,
+  timezone: string,
+  action: Extract<PairingSetupAction, { requestCode: string }>,
+  replyTokenCiphertext: string | undefined,
+): Promise<ProcessInboundEventResult> {
+  const request = await loadPairingJoinRequest(client, event.ledger_id, action.requestCode);
+  if (request === null) {
+    const reply = "找不到這個配對申請，請回到最新的配對卡片操作。";
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+
+  if (action.kind === "cancel_join") {
+    if (request.candidate_line_user_id !== lineUserId) {
+      const reply = "只有提出這筆申請的人可以取消。";
+      await enqueueReply(client, event, destination, replyTokenCiphertext,
+        "member_pairing_result", reply);
+      await finish(client, event, "rejected");
+      return processedResult(event, "rejected");
+    }
+    if (request.status !== "pending" || request.invitation_status !== "pending") {
+      const reply = request.status === "confirmed" ? "這筆配對已經完成。" : "這筆配對申請已經關閉。";
+      await enqueueReply(client, event, destination, replyTokenCiphertext,
+        "member_pairing_result", reply);
+      await finish(client, event, "noop");
+      return processedResult(event, "noop");
+    }
+    await client.query(
+      `UPDATE pairing_join_request SET status='cancelled',responded_at=clock_timestamp()
+        WHERE id=$1 AND status='pending'`,
+      [request.id],
+    );
+    const reply = "你的配對申請已取消；邀請本身仍有效，之後仍可重新申請。";
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "applied");
+    return processedResult(event, "applied");
+  }
+
+  if (request.invited_by_line_user_id !== lineUserId) {
+    const reply = request.candidate_line_user_id === lineUserId
+      ? "申請人不能自己確認配對；必須由邀請建立者核對後操作。"
+      : "只有這次邀請的建立者可以確認或拒絕這筆申請。";
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+  if (request.status !== "pending" || request.invitation_status !== "pending") {
+    const reply = request.status === "confirmed"
+      ? "這筆配對已經完成，不會重複新增成員。"
+      : "這筆配對申請已經關閉，請使用最新的申請卡片。";
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "noop");
+    return processedResult(event, "noop");
+  }
+
+  if (action.kind === "reject_join") {
+    await client.query(
+      `UPDATE pairing_join_request SET status='rejected',responded_at=clock_timestamp()
+        WHERE id=$1 AND status='pending'`,
+      [request.id],
+    );
+    const reply = `已拒絕配對申請 ${request.request_code}；邀請仍有效，正確的對象可以另外提出申請。`;
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "applied");
+    return processedResult(event, "applied");
+  }
+
+  if (request.candidate_line_user_id === lineUserId) {
+    throw new Error("pairing_self_confirmation_invariant");
+  }
+  const conflicts = await client.query<{ line_user_id: string }>(
+    `SELECT line_user_id FROM member
+      WHERE line_user_id=ANY($1::text[]) AND is_active AND membership_kind='couple'
+      FOR UPDATE`,
+    [[lineUserId, request.candidate_line_user_id]],
+  );
+  if (conflicts.rowCount !== 0 || await activeCoupleMemberCount(client, event.ledger_id) !== 0) {
+    await closePairingInvitation(client, request.invitation_id, "cancelled");
+    const reply = "建立者或申請者已經完成其他配對，這次邀請已自動取消，沒有新增任何成員。";
+    await enqueueReply(client, event, destination, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+
+  const inviterName = await upsertPairMember(client, event.ledger_id, lineUserId, "成員 A");
+  const candidateName = await upsertPairMember(
+    client, event.ledger_id, request.candidate_line_user_id, "成員 B",
+  );
+  await client.query(
+    `UPDATE pairing_join_request
+        SET status=CASE WHEN id=$2 THEN 'confirmed' ELSE 'rejected' END,
+            responded_at=clock_timestamp()
+      WHERE invitation_id=$1 AND status='pending'`,
+    [request.invitation_id, request.id],
+  );
+  await client.query(
+    `UPDATE pairing_invitation
+        SET status='completed',paired_line_user_id=$2,resolved_at=clock_timestamp()
+      WHERE id=$1 AND status='pending'`,
+    [request.invitation_id, request.candidate_line_user_id],
+  );
+  await invalidateOtherPairingSetup(
+    client, request.invitation_id, [lineUserId, request.candidate_line_user_id],
+  );
+  const reply = `配對成功！「${inviterName}」與「${candidateName}」已成為這本共同帳的兩位成員。`;
+  await enqueueReply(client, event, destination, replyTokenCiphertext,
+    "member_pairing_result", reply, pairingStatusCard({
+      altText: reply,
+      memberName: inviterName,
+      partnerName: candidateName,
+    }));
+  await finish(client, event, "applied");
+  return processedResult(event, "applied");
+}
+
+async function processPendingPairingStatus(
+  client: PoolClient,
+  event: ClaimedEvent,
+  lineUserId: string,
+  chatType: "group" | "user",
+  replyTokenCiphertext: string | undefined,
+): Promise<ProcessInboundEventResult> {
+  const ledger = await client.query<{ line_group_id: string; timezone: string }>(
+    "SELECT line_group_id,timezone FROM ledger WHERE id=$1 FOR UPDATE",
+    [event.ledger_id],
+  );
+  const row = ledger.rows[0];
+  if (row === undefined) throw new Error("pairing_ledger_missing");
+  if (chatType === "user") {
+    const reply = "你目前使用獨立個人帳，不需要配對；共同模式才需要在群組完成配對。";
+    await enqueueReply(client, event, row.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply, standalonePersonalCard(reply));
+    await finish(client, event, "applied");
+    return processedResult(event, "applied");
+  }
+
+  await expirePairingSetup(client, event.ledger_id);
+  const active = await loadActiveCoupleMembership(client, lineUserId);
+  if (active !== null) {
+    const reply = "你已經有一組有效配對；等待中的邀請不影響帳號，但不能同時完成第二組配對。";
+    await enqueueReply(client, event, row.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply);
+    await finish(client, event, "applied");
+    return processedResult(event, "applied");
+  }
+
+  const invitation = await loadPendingPairingInvitation(client, event.ledger_id);
+  if (invitation === null) {
+    const reply = "這個群組目前沒有等待中的配對，也尚未完成配對。";
+    await enqueueReply(client, event, row.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply, pairingGuideCard(reply));
+    await finish(client, event, "applied");
+    return processedResult(event, "applied");
+  }
+
+  const request = await loadPendingJoinRequestForCandidate(client, invitation.id, lineUserId);
+  const viewerRole = invitation.invited_by_line_user_id === lineUserId
+    ? "inviter"
+    : request === null ? "observer" : "candidate";
+  const pendingCount = viewerRole === "inviter"
+    ? await pendingJoinRequestCount(client, invitation.id)
+    : undefined;
+  const reply = viewerRole === "inviter"
+    ? `你的配對邀請仍有效，目前有 ${pendingCount ?? 0} 位待確認。`
+    : viewerRole === "candidate"
+      ? `你的配對申請 ${request!.request_code} 正在等待建立者確認。`
+      : "這個群組有等待中的配對邀請；輸入「配對」只會提出申請，不會直接占用名額。";
+  await enqueueReply(client, event, row.line_group_id, replyTokenCiphertext,
+    "member_pairing_result", reply, pairingInvitationCard({
+      altText: reply,
+      expiresAt: formatPairingTime(invitation.expires_at, row.timezone),
+      viewerRole,
+      ...(request === null ? {} : { requestCode: request.request_code }),
+      ...(pendingCount === undefined ? {} : { pendingCandidateCount: pendingCount }),
+    }));
+  await finish(client, event, "applied");
+  return processedResult(event, "applied");
+}
+
+async function expirePairingSetup(client: PoolClient, ledgerId: string): Promise<void> {
+  await client.query(
+    `UPDATE pairing_invitation
+        SET status='expired',resolved_at=clock_timestamp()
+      WHERE ledger_id=$1 AND status='pending' AND expires_at <= clock_timestamp()`,
+    [ledgerId],
+  );
+  await client.query(
+    `UPDATE pairing_join_request request
+        SET status='expired',responded_at=clock_timestamp()
+       FROM pairing_invitation invitation
+      WHERE request.invitation_id=invitation.id
+        AND invitation.ledger_id=$1
+        AND request.status='pending'
+        AND (request.expires_at <= clock_timestamp() OR invitation.status <> 'pending')`,
+    [ledgerId],
+  );
+}
+
+async function loadPendingPairingInvitation(
+  client: PoolClient,
+  ledgerId: string,
+): Promise<PendingPairingInvitation | null> {
+  const result = await client.query<PendingPairingInvitation>(
+    `SELECT id::text,invited_by_line_user_id,expires_at
+       FROM pairing_invitation
+      WHERE ledger_id=$1 AND status='pending'
+      FOR UPDATE`,
+    [ledgerId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function loadPendingJoinRequestForCandidate(
+  client: PoolClient,
+  invitationId: string,
+  lineUserId: string,
+): Promise<{ request_code: string; expires_at: Date } | null> {
+  const result = await client.query<{ request_code: string; expires_at: Date }>(
+    `SELECT request_code,expires_at
+       FROM pairing_join_request
+      WHERE invitation_id=$1 AND candidate_line_user_id=$2 AND status='pending'
+      FOR UPDATE`,
+    [invitationId, lineUserId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function loadPairingJoinRequest(
+  client: PoolClient,
+  ledgerId: string,
+  requestCode: string,
+): Promise<PairingJoinRequest | null> {
+  const result = await client.query<PairingJoinRequest>(
+    `SELECT request.id::text,request.request_code,request.candidate_line_user_id,
+            request.status,request.expires_at,invitation.id::text AS invitation_id,
+            invitation.status AS invitation_status,invitation.invited_by_line_user_id
+       FROM pairing_join_request request
+       JOIN pairing_invitation invitation ON invitation.id=request.invitation_id
+      WHERE invitation.ledger_id=$1 AND request.request_code=$2
+      FOR UPDATE OF request,invitation`,
+    [ledgerId, requestCode],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function pendingJoinRequestCount(client: PoolClient, invitationId: string): Promise<number> {
+  const result = await client.query<{ count: number }>(
+    `SELECT count(*)::integer AS count FROM pairing_join_request
+      WHERE invitation_id=$1 AND status='pending'`,
+    [invitationId],
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+async function insertPairingJoinRequestWithRetry(
+  client: PoolClient,
+  invitation: PendingPairingInvitation,
+  lineUserId: string,
+  generatePairingCode: () => string,
+): Promise<{ requestCode: string; expiresAt: Date }> {
+  for (let attempt = 0; attempt < MAX_PUBLIC_ID_ATTEMPTS; attempt += 1) {
+    const requestCode = generatePairingCode().normalize("NFKC").trim().toUpperCase();
+    if (!/^[0-9A-HJKMNP-TV-Z]{8}$/u.test(requestCode)) {
+      throw new Error("invalid_generated_pairing_code");
+    }
+    const result = await client.query<{ expires_at: Date }>(
+      `INSERT INTO pairing_join_request (
+         invitation_id,candidate_line_user_id,request_code,expires_at
+       ) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (request_code) DO NOTHING
+       RETURNING expires_at`,
+      [invitation.id, lineUserId, requestCode, invitation.expires_at],
+    );
+    if (result.rows[0] !== undefined) {
+      return { requestCode, expiresAt: result.rows[0].expires_at };
+    }
+  }
+  throw new Error("pairing_code_collision_limit_exceeded");
+}
+
+async function loadActiveCoupleMembership(
+  client: PoolClient,
+  lineUserId: string,
+): Promise<{ ledger_id: string } | null> {
+  const result = await client.query<{ ledger_id: string }>(
+    `SELECT ledger_id::text FROM member
+      WHERE line_user_id=$1 AND is_active AND membership_kind='couple'
+      FOR UPDATE`,
+    [lineUserId],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function activeCoupleMemberCount(client: PoolClient, ledgerId: string): Promise<number> {
+  const result = await client.query<{ count: number }>(
+    `SELECT count(*)::integer AS count FROM member
+      WHERE ledger_id=$1 AND is_active AND membership_kind='couple'`,
+    [ledgerId],
+  );
+  return result.rows[0]?.count ?? 0;
+}
+
+async function loadPairingCandidateLabel(client: PoolClient, lineUserId: string): Promise<string> {
+  const result = await client.query<{ display_name: string }>(
+    `SELECT display_name FROM member
+      WHERE line_user_id=$1
+        AND display_name NOT IN ('我','新成員','另一半','成員 A','成員 B')
+      ORDER BY (membership_kind='personal' AND is_active) DESC,updated_at DESC,id
+      LIMIT 1`,
+    [lineUserId],
+  );
+  return result.rows[0]?.display_name ?? "這則訊息的發送者";
+}
+
+async function upsertPairMember(
+  client: PoolClient,
+  ledgerId: string,
+  lineUserId: string,
+  fallbackName: string,
+): Promise<string> {
+  const preferred = await client.query<{ display_name: string }>(
+    `SELECT display_name FROM member
+      WHERE line_user_id=$1
+        AND display_name NOT IN ('我','新成員','另一半','成員 A','成員 B')
+      ORDER BY (ledger_id=$2::uuid) DESC,(membership_kind='personal' AND is_active) DESC,
+               updated_at DESC,id
+      LIMIT 1`,
+    [lineUserId, ledgerId],
+  );
+  let displayName = preferred.rows[0]?.display_name ?? fallbackName;
+  const conflict = await client.query(
+    `SELECT 1 FROM member
+      WHERE ledger_id=$1 AND line_user_id<>$2 AND is_active
+        AND (lower(btrim(display_name))=lower(btrim($3))
+          OR lower(btrim(command_alias))=lower(btrim($3)))`,
+    [ledgerId, lineUserId, displayName],
+  );
+  if (conflict.rowCount !== 0) displayName = fallbackName;
+  const result = await client.query<{ display_name: string }>(
+    `INSERT INTO member (
+       ledger_id,line_user_id,display_name,command_alias,is_active,membership_kind
+     ) VALUES ($1,$2,$3,$3,true,'couple')
+     ON CONFLICT (ledger_id,line_user_id) DO UPDATE
+       SET display_name=EXCLUDED.display_name,command_alias=EXCLUDED.command_alias,
+           is_active=true,membership_kind='couple',updated_at=clock_timestamp()
+     RETURNING display_name`,
+    [ledgerId, lineUserId, displayName],
+  );
+  return result.rows[0]!.display_name;
+}
+
+async function closePairingInvitation(
+  client: PoolClient,
+  invitationId: string,
+  status: "cancelled" | "expired",
+): Promise<void> {
+  await client.query(
+    `UPDATE pairing_join_request
+        SET status=$2,responded_at=clock_timestamp()
+      WHERE invitation_id=$1 AND status='pending'`,
+    [invitationId, status],
+  );
+  await client.query(
+    `UPDATE pairing_invitation
+        SET status=$2,resolved_at=clock_timestamp()
+      WHERE id=$1 AND status='pending'`,
+    [invitationId, status],
+  );
+}
+
+async function invalidateOtherPairingSetup(
+  client: PoolClient,
+  completedInvitationId: string,
+  lineUserIds: readonly [string, string],
+): Promise<void> {
+  await client.query(
+    `UPDATE pairing_join_request
+        SET status='cancelled',responded_at=clock_timestamp()
+      WHERE status='pending' AND candidate_line_user_id=ANY($1::text[])
+        AND invitation_id<>$2`,
+    [lineUserIds, completedInvitationId],
+  );
+  await client.query(
+    `WITH closed AS (
+       UPDATE pairing_invitation
+          SET status='cancelled',resolved_at=clock_timestamp()
+        WHERE status='pending' AND id<>$2
+          AND invited_by_line_user_id=ANY($1::text[])
+       RETURNING id
+     )
+     UPDATE pairing_join_request request
+        SET status='cancelled',responded_at=clock_timestamp()
+       FROM closed
+      WHERE request.invitation_id=closed.id AND request.status='pending'`,
+    [lineUserIds, completedInvitationId],
+  );
 }
 
 function parsePairingManagementAction(input: string): PairingManagementAction | null {

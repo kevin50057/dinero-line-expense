@@ -63,7 +63,7 @@ export function helpCards(altText: string): LineReplyFlexMessage {
           separator("md"),
           rowBox({ label: "共同記帳", value: "建立兩人群組並加入機器人" }),
           separator("md"),
-          rowBox({ label: "完成配對", value: "第一人「建立配對」、第二人「配對」" }),
+          rowBox({ label: "完成配對", value: "第一人建立、第二人申請、第一人確認" }),
           separator("md"),
           rowBox({ label: "解除配對", value: "一人申請、另一人同意才生效" }),
         ]),
@@ -134,15 +134,79 @@ export function pairingGuideCard(altText: string): LineReplyFlexMessage {
   return infoCard({
     altText,
     kicker: "DINERO 配對模式",
-    title: "先完成兩人配對",
+    title: "安全完成兩人配對",
     rows: [
-      { label: "第一位", value: "傳送「建立配對」建立帳本身份" },
-      { label: "第二位", value: "在同一群組傳送「配對」加入" },
+      { label: "第一位", value: "傳送「建立配對」開啟 24 小時邀請" },
+      { label: "第二位", value: "在同一群組傳送「配對」提出申請" },
+      { label: "第一位確認", value: "核對訊息發送者後，按「確認配對」" },
       { label: "完成後", value: "兩人各自傳送「設定暱稱 名字」" },
-      { label: "解除時", value: "一人傳送「解除配對」，另一人同意" },
     ],
-    note: "每個 LINE 帳號最多加入一組配對；原本的私訊個人帳會保持獨立。",
+    note: "等待中可取消且不占配對名額；只有建立者能確認指定申請，第三人無法搶走位置。",
     actions: [{ label: "建立配對", text: "建立配對" }, { label: "配對狀態", text: "配對狀態" }],
+  });
+}
+
+export function pairingInvitationCard(options: {
+  readonly altText: string;
+  readonly expiresAt: string;
+  readonly viewerRole: "inviter" | "candidate" | "observer";
+  readonly requestCode?: string;
+  readonly pendingCandidateCount?: number;
+}): LineReplyFlexMessage {
+  const role = options.viewerRole === "inviter"
+    ? "你是建立者"
+    : options.viewerRole === "candidate"
+      ? "你的申請等待確認"
+      : "你可以提出加入申請";
+  const actions: CardAction[] = options.viewerRole === "inviter"
+    ? [{ label: "取消設定", text: "取消配對設定" }, { label: "更新狀態", text: "配對狀態" }]
+    : options.viewerRole === "candidate" && options.requestCode !== undefined
+      ? [
+          { label: "取消申請", text: `取消配對申請 ${options.requestCode}` },
+          { label: "更新狀態", text: "配對狀態" },
+        ]
+      : [{ label: "申請配對", text: "配對" }, { label: "查看狀態", text: "配對狀態" }];
+  return infoCard({
+    altText: options.altText,
+    kicker: "DINERO 配對邀請",
+    title: "等待安全確認",
+    rows: [
+      { label: "目前身份", value: role },
+      { label: "邀請期限", value: options.expiresAt },
+      ...(options.pendingCandidateCount === undefined
+        ? []
+        : [{ label: "待確認申請", value: `${options.pendingCandidateCount} 位` }]),
+      ...(options.requestCode === undefined
+        ? []
+        : [{ label: "你的申請碼", value: options.requestCode }]),
+    ],
+    note: options.viewerRole === "inviter"
+      ? "請只確認你認得的那一則申請；等待中可隨時取消，且不影響你在其他群組配對。"
+      : "送出申請不會立刻配對，必須由邀請建立者確認。",
+    actions,
+  });
+}
+
+export function pairingJoinRequestCard(options: {
+  readonly altText: string;
+  readonly requestCode: string;
+  readonly candidateName: string;
+  readonly expiresAt: string;
+}): LineReplyFlexMessage {
+  return infoCard({
+    altText: options.altText,
+    kicker: "DINERO 配對確認",
+    title: "有人提出配對申請",
+    rows: [
+      { label: "申請者", value: options.candidateName },
+      { label: "申請碼", value: options.requestCode },
+      { label: "確認期限", value: options.expiresAt },
+    ],
+    note: "只有邀請建立者可以確認。請核對上一則 LINE 訊息的發送者；不認識就拒絕。",
+    actions: [
+      { label: "確認配對", text: `確認配對 ${options.requestCode}` },
+      { label: "拒絕配對", text: `拒絕配對 ${options.requestCode}` },
+    ],
   });
 }
 

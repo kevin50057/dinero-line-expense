@@ -41,6 +41,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await admin.query(await readFile(resolve("db/migrations/009_mutual_unpairing.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/010_standalone_personal_ledgers.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/011_user_scoped_personal_history.sql"), "utf8"));
+    await admin.query(await readFile(resolve("db/migrations/012_safe_pairing_invitations.sql"), "utf8"));
     const ledger = await admin.query<{ id: string }>(
       `INSERT INTO ledger (name, line_group_id) VALUES ('Worker ledger', 'C-worker')
        RETURNING id::text AS id`,
@@ -533,66 +534,254 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     expect(remaining.rows[0]?.count).toBe("0");
   });
 
-  it("pairs exactly one second member and returns an idempotent confirmation", async () => {
-    const pairingLedger = await admin.query<{ id: string }>(
-      "INSERT INTO ledger (name,line_group_id) VALUES ('Pairing ledger','C-pairing') RETURNING id::text",
+  it("keeps an invitation outside membership, rejects self-pairing and lets the inviter abandon it", async () => {
+    const provisioned = await admin.query<{ id: string }>(
+      "SELECT provision_line_group_ledger('C-safe-pairing')::text AS id",
     );
-    const pairingLedgerId = pairingLedger.rows[0]!.id;
-    await admin.query(
-      "INSERT INTO member (ledger_id,line_user_id,display_name) VALUES ($1,'U-owner','帳本主人')",
+    const pairingLedgerId = provisioned.rows[0]!.id;
+    const submit = async (eventId: string, userId: string, text: string) => {
+      await admin.query(
+        `INSERT INTO inbound_event
+         (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+         VALUES ($1,$2,'message',$3,'2026-08-13T04:10:00.123Z',$4::jsonb)`,
+        [eventId, pairingLedgerId, `M-${eventId}`, JSON.stringify({
+          destination: "U-bot", source: { chatType: "group", userId },
+          message: { type: "text", text },
+          replyTokenCiphertext: Buffer.from(`cipher-${eventId}`).toString("base64"),
+        })],
+      );
+      return processNextInboundEvent(pool);
+    };
+
+    expect(await submit("E-safe-create", "U-safe-owner", "建立配對"))
+      .toMatchObject({ outcome: "applied" });
+    expect(await submit("E-safe-create-again", "U-safe-owner", "建立配對"))
+      .toMatchObject({ outcome: "noop" });
+    expect(await submit("E-safe-self-join", "U-safe-owner", "配對"))
+      .toMatchObject({ outcome: "rejected" });
+    const pending = await pool.query<{ members: string; invitations: string; requests: string }>(
+      `SELECT
+         (SELECT count(*)::text FROM member WHERE ledger_id=$1 AND is_active) AS members,
+         (SELECT count(*)::text FROM pairing_invitation WHERE ledger_id=$1 AND status='pending') AS invitations,
+         (SELECT count(*)::text FROM pairing_join_request request
+            JOIN pairing_invitation invitation ON invitation.id=request.invitation_id
+           WHERE invitation.ledger_id=$1) AS requests`,
       [pairingLedgerId],
+    );
+    expect(pending.rows[0]).toEqual({ members: "0", invitations: "1", requests: "0" });
+
+    const another = await admin.query<{ id: string }>(
+      "SELECT provision_line_group_ledger('C-safe-pairing-other')::text AS id",
     );
     await admin.query(
       `INSERT INTO inbound_event
        (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
-       VALUES ('E-pair-member',$1,'message','M-pair-member','2026-08-13T04:10:00.123Z',$2::jsonb)`,
-      [pairingLedgerId, JSON.stringify({
-        destination: "U-bot", source: { userId: "U-partner" },
-        message: { type: "text", text: "配對" },
-        replyTokenCiphertext: Buffer.from("cipher-pair").toString("base64"),
+       VALUES ('E-safe-other',$1,'message','M-safe-other',clock_timestamp(),$2::jsonb)`,
+      [another.rows[0]!.id, JSON.stringify({
+        destination: "U-bot", source: { chatType: "group", userId: "U-safe-owner" },
+        message: { type: "text", text: "建立配對" },
       })],
     );
-
     expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
-    const paired = await pool.query<{ display_name: string; count: string }>(
-      `SELECT max(display_name) FILTER (WHERE line_user_id='U-partner') AS display_name,
-              count(*)::text AS count FROM member WHERE ledger_id=$1 AND is_active`,
-      [pairingLedgerId],
-    );
-    expect(paired.rows[0]).toEqual({ display_name: "新成員", count: "2" });
-    const reply = await pool.query<{ text: string }>(
-      "SELECT payload_json->'messages'->0->>'text' AS text FROM outbox_message WHERE source_webhook_event_id='E-pair-member'",
-    );
-    expect(reply.rows[0]?.text).toContain("配對成功");
-    expect(reply.rows[0]?.text).toContain("設定暱稱");
+    expect(await submit("E-safe-cancel", "U-safe-owner", "取消配對設定"))
+      .toMatchObject({ outcome: "applied" });
   });
 
-  it("lets the first member establish a newly provisioned pairing", async () => {
+  it("requires the invitation creator to confirm one specific candidate", async () => {
     const provisioned = await admin.query<{ id: string }>(
-      "SELECT provision_line_group_ledger('C-first-pair')::text AS id",
+      "SELECT provision_line_group_ledger('C-confirmed-pairing')::text AS id",
+    );
+    const pairingLedgerId = provisioned.rows[0]!.id;
+    const submit = async (
+      eventId: string,
+      userId: string,
+      text: string,
+      generatePairingCode?: () => string,
+    ) => {
+      await admin.query(
+        `INSERT INTO inbound_event
+         (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+         VALUES ($1,$2,'message',$3,'2026-08-13T04:10:00.123Z',$4::jsonb)`,
+        [eventId, pairingLedgerId, `M-${eventId}`, JSON.stringify({
+          destination: "U-bot", source: { chatType: "group", userId },
+          message: { type: "text", text },
+          replyTokenCiphertext: Buffer.from(`cipher-${eventId}`).toString("base64"),
+        })],
+      );
+      return processNextInboundEvent(pool, {
+        ...(generatePairingCode === undefined ? {} : { generatePairingCode }),
+      });
+    };
+
+    expect(await submit("E-confirm-create", "U-confirm-owner", "建立配對"))
+      .toMatchObject({ outcome: "applied" });
+    expect(await submit("E-confirm-stranger", "U-confirm-stranger", "配對", () => "STRAN123"))
+      .toMatchObject({ outcome: "applied" });
+    expect(await submit("E-confirm-intended", "U-confirm-intended", "配對", () => "CANDD456"))
+      .toMatchObject({ outcome: "applied" });
+    expect(await submit("E-confirm-self", "U-confirm-stranger", "確認配對 STRAN123"))
+      .toMatchObject({ outcome: "rejected" });
+    expect(await submit("E-confirm-third", "U-confirm-third", "確認配對 CANDD456"))
+      .toMatchObject({ outcome: "rejected" });
+    expect(await submit("E-confirm-reject-stranger", "U-confirm-owner", "拒絕配對 STRAN123"))
+      .toMatchObject({ outcome: "applied" });
+    expect(await submit("E-confirm-owner", "U-confirm-owner", "確認配對 CANDD456"))
+      .toMatchObject({ outcome: "applied" });
+    expect(await submit("E-confirm-repeat", "U-confirm-owner", "確認配對 CANDD456"))
+      .toMatchObject({ outcome: "noop" });
+
+    const result = await pool.query<{
+      members: string[]; statuses: Array<{ code: string; status: string }>;
+    }>(
+      `SELECT
+         (SELECT array_agg(line_user_id ORDER BY line_user_id) FROM member
+           WHERE ledger_id=$1 AND is_active AND membership_kind='couple') AS members,
+         (SELECT jsonb_agg(jsonb_build_object('code',request.request_code,'status',request.status)
+                           ORDER BY request.request_code)
+            FROM pairing_join_request request
+            JOIN pairing_invitation invitation ON invitation.id=request.invitation_id
+           WHERE invitation.ledger_id=$1) AS statuses`,
+      [pairingLedgerId],
+    );
+    expect(result.rows[0]?.members).toEqual(["U-confirm-intended", "U-confirm-owner"]);
+    expect(result.rows[0]?.statuses).toEqual([
+      { code: "CANDD456", status: "confirmed" },
+      { code: "STRAN123", status: "rejected" },
+    ]);
+  });
+
+  it("expires abandoned setup and lets a candidate withdraw without changing membership", async () => {
+    const provisioned = await admin.query<{ id: string }>(
+      "SELECT provision_line_group_ledger('C-expiring-pairing')::text AS id",
     );
     const pairingLedgerId = provisioned.rows[0]!.id;
     await admin.query(
-      `INSERT INTO inbound_event
-       (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
-       VALUES ('E-first-pair',$1,'message','M-first-pair','2026-08-13T04:10:00.123Z',$2::jsonb)`,
-      [pairingLedgerId, JSON.stringify({
-        destination: "U-bot", source: { userId: "U-first-new" },
-        message: { type: "text", text: "建立配對" },
-        replyTokenCiphertext: Buffer.from("cipher-first").toString("base64"),
-      })],
-    );
-
-    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
-    const result = await pool.query<{ count: string; text: string }>(
-      `SELECT count(DISTINCT m.id)::text AS count,
-              max(om.payload_json->'messages'->0->>'text') AS text
-         FROM member m JOIN outbox_message om ON om.ledger_id=m.ledger_id
-        WHERE m.ledger_id=$1 AND m.is_active AND om.source_webhook_event_id='E-first-pair'`,
+      `INSERT INTO pairing_invitation (
+         ledger_id,invited_by_line_user_id,created_at,expires_at
+       ) VALUES ($1,'U-expired-owner',clock_timestamp()-interval '25 hours',
+                 clock_timestamp()-interval '1 hour')`,
       [pairingLedgerId],
     );
-    expect(result.rows[0]?.count).toBe("1");
-    expect(result.rows[0]?.text).toContain("第一位成員");
+    const submit = async (eventId: string, userId: string, text: string, code?: string) => {
+      await admin.query(
+        `INSERT INTO inbound_event
+         (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+         VALUES ($1,$2,'message',$3,clock_timestamp(),$4::jsonb)`,
+        [eventId, pairingLedgerId, `M-${eventId}`, JSON.stringify({
+          destination: "U-bot", source: { chatType: "group", userId },
+          message: { type: "text", text },
+        })],
+      );
+      return processNextInboundEvent(pool, {
+        ...(code === undefined ? {} : { generatePairingCode: () => code }),
+      });
+    };
+
+    expect(await submit("E-expired-recreate", "U-new-owner", "建立配對"))
+      .toMatchObject({ outcome: "applied" });
+    expect(await submit("E-expired-request", "U-withdraw", "配對", "WTHDR456"))
+      .toMatchObject({ outcome: "applied" });
+    expect(await submit("E-expired-withdraw", "U-withdraw", "取消配對申請 WTHDR456"))
+      .toMatchObject({ outcome: "applied" });
+
+    const states = await pool.query<{ invitations: string[]; requests: string[]; members: string }>(
+      `SELECT
+         (SELECT array_agg(status ORDER BY created_at) FROM pairing_invitation WHERE ledger_id=$1) AS invitations,
+         (SELECT array_agg(request.status ORDER BY request.requested_at)
+            FROM pairing_join_request request
+            JOIN pairing_invitation invitation ON invitation.id=request.invitation_id
+           WHERE invitation.ledger_id=$1) AS requests,
+         (SELECT count(*)::text FROM member WHERE ledger_id=$1 AND is_active) AS members`,
+      [pairingLedgerId],
+    );
+    expect(states.rows[0]).toEqual({
+      invitations: ["expired", "pending"],
+      requests: ["cancelled"],
+      members: "0",
+    });
+  });
+
+  it("serializes concurrent duplicate create, join and confirm clicks", async () => {
+    const provisioned = await admin.query<{ id: string }>(
+      "SELECT provision_line_group_ledger('C-concurrent-pairing')::text AS id",
+    );
+    const pairingLedgerId = provisioned.rows[0]!.id;
+    const insert = async (eventId: string, userId: string, text: string) => {
+      await admin.query(
+        `INSERT INTO inbound_event
+         (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+         VALUES ($1,$2,'message',$3,clock_timestamp(),$4::jsonb)`,
+        [eventId, pairingLedgerId, `M-${eventId}`, JSON.stringify({
+          destination: "U-bot", source: { chatType: "group", userId },
+          message: { type: "text", text },
+        })],
+      );
+    };
+
+    await insert("E-concurrent-create-a", "U-concurrent-owner", "建立配對");
+    await insert("E-concurrent-create-b", "U-concurrent-owner", "建立配對");
+    const creates = await Promise.all([
+      processNextInboundEvent(pool), processNextInboundEvent(pool),
+    ]);
+    expect(creates.map((result) => result.processed && result.outcome).sort())
+      .toEqual(["applied", "noop"]);
+
+    await insert("E-concurrent-join-a", "U-concurrent-candidate", "配對");
+    await insert("E-concurrent-join-b", "U-concurrent-candidate", "配對");
+    const joins = await Promise.all([
+      processNextInboundEvent(pool, { generatePairingCode: () => "DBCK1234" }),
+      processNextInboundEvent(pool, { generatePairingCode: () => "DBCK5678" }),
+    ]);
+    expect(joins.map((result) => result.processed && result.outcome).sort())
+      .toEqual(["applied", "noop"]);
+    const request = await pool.query<{ request_code: string }>(
+      `SELECT request.request_code FROM pairing_join_request request
+        JOIN pairing_invitation invitation ON invitation.id=request.invitation_id
+       WHERE invitation.ledger_id=$1 AND request.status='pending'`,
+      [pairingLedgerId],
+    );
+    expect(request.rowCount).toBe(1);
+
+    await insert("E-concurrent-confirm-a", "U-concurrent-owner", `確認配對 ${request.rows[0]!.request_code}`);
+    await insert("E-concurrent-confirm-b", "U-concurrent-owner", `確認配對 ${request.rows[0]!.request_code}`);
+    const confirms = await Promise.all([
+      processNextInboundEvent(pool), processNextInboundEvent(pool),
+    ]);
+    expect(confirms.map((result) => result.processed && result.outcome).sort())
+      .toEqual(["applied", "noop"]);
+    const members = await pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM member
+        WHERE ledger_id=$1 AND is_active AND membership_kind='couple'`,
+      [pairingLedgerId],
+    );
+    expect(members.rows[0]?.count).toBe("2");
+  });
+
+  it("rejects direct self-pairing and a third active member at the database boundary", async () => {
+    const provisioned = await admin.query<{ id: string }>(
+      "SELECT provision_line_group_ledger('C-db-pair-limit')::text AS id",
+    );
+    const invitation = await admin.query<{ id: string; expires_at: Date }>(
+      `INSERT INTO pairing_invitation (ledger_id,invited_by_line_user_id)
+       VALUES ($1,'U-db-self') RETURNING id::text,expires_at`,
+      [provisioned.rows[0]!.id],
+    );
+    await expect(admin.query(
+      `INSERT INTO pairing_join_request (
+         invitation_id,candidate_line_user_id,request_code,expires_at
+       ) VALUES ($1,'U-db-self','SEFF1234',$2)`,
+      [invitation.rows[0]!.id, invitation.rows[0]!.expires_at],
+    )).rejects.toMatchObject({ code: "23514" });
+    await admin.query(
+      `INSERT INTO member (ledger_id,line_user_id,display_name,membership_kind)
+       VALUES ($1,'U-db-pair-a','甲','couple'),($1,'U-db-pair-b','乙','couple')`,
+      [provisioned.rows[0]!.id],
+    );
+    await expect(admin.query(
+      `INSERT INTO member (ledger_id,line_user_id,display_name,membership_kind)
+       VALUES ($1,'U-db-pair-c','丙','couple')`,
+      [provisioned.rows[0]!.id],
+    )).rejects.toMatchObject({ code: "23514" });
   });
 
   it("lets a standalone personal member record expenses without pairing and blocks shared features", async () => {
