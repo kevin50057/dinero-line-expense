@@ -68,6 +68,9 @@ interface LedgerMember {
   member_id: string;
   display_name: string;
   membership_kind: "personal" | "couple";
+  line_user_id: string;
+  couple_ledger_id: string | null;
+  couple_member_id: string | null;
 }
 
 interface TextPayload {
@@ -278,7 +281,7 @@ async function processMessage(
     return processedResult(event, "rejected");
   }
 
-  const identity = await loadIdentity(client, event.ledger_id, payload.source.userId);
+  let identity = await loadIdentity(client, event.ledger_id, payload.source.userId);
   if (identity === null) {
     const normalizedText = payload.message.text.normalize("NFKC").trim();
     if (isPairingCommand(normalizedText)) {
@@ -339,6 +342,34 @@ async function processMessage(
     return processedResult(event, "rejected");
   }
   if (command.kind === "command") {
+    const publicId = commandPublicId(command.command);
+    const targetLedgerId = publicId === null
+      ? ledgerCommandRequiresCompletePair(command.command) && identity.membership_kind === "personal"
+        ? identity.couple_ledger_id
+        : null
+      : await resolveAuthorizedCommandLedger(client, identity, publicId);
+    if (publicId !== null && targetLedgerId === null) {
+      if (await lockAndCheckTombstone(client, event)) {
+        await finish(client, event, "ignored_unsent");
+        return processedResult(event, "ignored_unsent");
+      }
+      const reply = "找不到這筆交易。請確認編號是否正確。";
+      await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
+        "ledger_command_result", reply);
+      await finish(client, event, "rejected");
+      return processedResult(event, "rejected");
+    }
+    if (targetLedgerId !== null && targetLedgerId !== event.ledger_id) {
+      const targetIdentity = await loadIdentityIncludingInactive(
+        client,
+        targetLedgerId,
+        identity.line_user_id,
+      );
+      if (targetIdentity !== null) {
+        await rehomeInboundEvent(client, event, targetLedgerId);
+        identity = targetIdentity;
+      }
+    }
     if (await lockAndCheckTombstone(client, event)) {
       await finish(client, event, "ignored_unsent");
       return processedResult(event, "ignored_unsent");
@@ -357,6 +388,8 @@ async function processMessage(
         ledgerId: event.ledger_id,
         memberId: identity.member_id,
         displayName: identity.display_name,
+        lineUserId: identity.line_user_id,
+        coupleLedgerId: identity.couple_ledger_id,
         timezone: identity.timezone,
       },
       { webhookEventId: event.webhook_event_id, eventAt: event.line_event_at },
@@ -537,7 +570,22 @@ async function pairLedgerMember(
   }
   const inserted = await client.query(
     `INSERT INTO member (ledger_id,line_user_id,display_name,command_alias,membership_kind)
-     VALUES ($1,$2,'新成員',NULL,'couple')
+     SELECT $1::uuid,$2::text,COALESCE(candidate.display_name,'新成員'),
+            candidate.display_name,'couple'
+       FROM (SELECT (
+         SELECT personal.display_name
+           FROM member personal
+          WHERE personal.line_user_id=$2 AND personal.membership_kind='personal'
+            AND personal.is_active
+            AND personal.display_name NOT IN ('我','新成員','另一半')
+            AND NOT EXISTS (
+              SELECT 1 FROM member other
+               WHERE other.ledger_id=$1 AND other.is_active
+                 AND (lower(btrim(other.display_name))=lower(btrim(personal.display_name))
+                   OR lower(btrim(other.command_alias))=lower(btrim(personal.display_name)))
+            )
+          ORDER BY personal.created_at,personal.id LIMIT 1
+       ) AS display_name) candidate
      ON CONFLICT DO NOTHING`,
     [event.ledger_id, lineUserId],
   );
@@ -775,6 +823,47 @@ function ledgerCommandRequiresCompletePair(command: LedgerCommand): boolean {
   return false;
 }
 
+function commandPublicId(command: LedgerCommand): string | null {
+  if (command.kind === "detail" || command.kind === "update" || command.kind === "tags"
+      || command.kind === "void" || command.kind === "restore") {
+    return command.publicId;
+  }
+  return null;
+}
+
+async function resolveAuthorizedCommandLedger(
+  client: PoolClient,
+  identity: LedgerMember,
+  publicId: string,
+): Promise<string | null> {
+  const result = await client.query<{ ledger_id: string }>(
+    `SELECT expense.ledger_id::text
+       FROM expense_transaction expense
+       LEFT JOIN member owner
+         ON owner.ledger_id=expense.ledger_id AND owner.id=expense.personal_owner_member_id
+      WHERE expense.public_id=$1
+        AND ((expense.scope='personal' AND owner.line_user_id=$2)
+          OR (expense.scope='shared' AND expense.ledger_id=$3::uuid))
+      LIMIT 2`,
+    [publicId, identity.line_user_id, identity.couple_ledger_id],
+  );
+  return result.rows.length === 1 ? result.rows[0]!.ledger_id : null;
+}
+
+async function rehomeInboundEvent(
+  client: PoolClient,
+  event: ClaimedEvent,
+  targetLedgerId: string,
+): Promise<void> {
+  const result = await client.query(
+    `UPDATE inbound_event SET ledger_id=$2
+      WHERE webhook_event_id=$1 AND ledger_id=$3`,
+    [event.webhook_event_id, targetLedgerId, event.ledger_id],
+  );
+  if (result.rowCount !== 1) throw new Error("inbound_event_rehome_failed");
+  event.ledger_id = targetLedgerId;
+}
+
 async function loadPendingDissolution(client: PoolClient, ledgerId: string): Promise<PendingDissolution | null> {
   const result = await client.query<PendingDissolution>(
     `SELECT request.id::text,request.requested_by_member_id::text,
@@ -813,14 +902,44 @@ async function loadIdentity(
   ledgerId: string,
   lineUserId: string,
 ): Promise<LedgerMember | null> {
+  return loadIdentityByStatus(client, ledgerId, lineUserId, true);
+}
+
+async function loadIdentityIncludingInactive(
+  client: PoolClient,
+  ledgerId: string,
+  lineUserId: string,
+): Promise<LedgerMember | null> {
+  return loadIdentityByStatus(client, ledgerId, lineUserId, false);
+}
+
+async function loadIdentityByStatus(
+  client: PoolClient,
+  ledgerId: string,
+  lineUserId: string,
+  activeOnly: boolean,
+): Promise<LedgerMember | null> {
   const result = await client.query<LedgerMember>(
     `SELECT l.id::text AS ledger_id, l.line_group_id, l.timezone,
             l.default_scope::text, l.allow_bare_entry,
-            m.id::text AS member_id, m.display_name, m.membership_kind
+            m.id::text AS member_id,
+            CASE WHEN m.display_name IN ('我','新成員','另一半')
+                 THEN COALESCE(couple.display_name,m.display_name)
+                 ELSE m.display_name END AS display_name,
+            m.membership_kind,m.line_user_id,
+            couple.ledger_id::text AS couple_ledger_id,
+            couple.id::text AS couple_member_id
        FROM ledger l
-       JOIN member m ON m.ledger_id = l.id AND m.line_user_id = $2 AND m.is_active
-      WHERE l.id = $1`,
-    [ledgerId, lineUserId],
+       JOIN member m ON m.ledger_id = l.id AND m.line_user_id = $2
+       LEFT JOIN LATERAL (
+         SELECT paired.id,paired.ledger_id,paired.display_name
+           FROM member paired
+          WHERE paired.line_user_id=$2 AND paired.is_active
+            AND paired.membership_kind='couple'
+          ORDER BY paired.created_at,paired.id LIMIT 1
+       ) couple ON true
+      WHERE l.id = $1 AND ($3::boolean=false OR m.is_active)`,
+    [ledgerId, lineUserId, activeOnly],
   );
   return result.rows[0] ?? null;
 }
@@ -864,7 +983,7 @@ async function insertExpenseWithCollisionRetry(
               $10::occurred_date_source, $11::timestamptz,
               $12::occurred_time_source, $13::time_precision,
               $14::text, $15::text, $16::text
-       ON CONFLICT (ledger_id, public_id) DO NOTHING
+       ON CONFLICT (public_id) DO NOTHING
        RETURNING id::text AS id`,
       [
         event.ledger_id, publicId, identity.member_id, payerMemberId, expense.scope,

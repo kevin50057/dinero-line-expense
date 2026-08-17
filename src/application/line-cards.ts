@@ -108,6 +108,8 @@ export function helpCards(altText: string): LineReplyFlexMessage {
           rowBox({ label: "搜尋", value: "找 牛肉麵" }),
           separator("md"),
           rowBox({ label: "排行", value: "分類排行" }),
+          separator("md"),
+          rowBox({ label: "群組隱私", value: "群組卡片全群可見；敏感個人查詢請私訊" }),
         ]),
         footer([{ label: "查月報", text: "查月報" }, { label: "本週報表", text: "週報" }]),
       ),

@@ -329,6 +329,19 @@ async function provisionPrivateLedgerId(client: PoolClient, lineUserId: string):
   );
   const id = result.rows[0]?.id;
   if (id === undefined) throw new LineInboxLedgerNotFoundError();
+  await client.query(
+    `UPDATE member personal
+        SET display_name=paired.display_name,command_alias=paired.display_name,
+            updated_at=clock_timestamp()
+       FROM member paired
+      WHERE personal.ledger_id=$1 AND personal.line_user_id=$2
+        AND personal.membership_kind='personal'
+        AND personal.display_name IN ('我','新成員','另一半')
+        AND paired.line_user_id=personal.line_user_id
+        AND paired.membership_kind='couple' AND paired.is_active
+        AND paired.display_name NOT IN ('我','新成員','另一半')`,
+    [id, lineUserId],
+  );
   return id;
 }
 

@@ -40,6 +40,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await admin.query(await readFile(resolve("db/migrations/008_public_pairing_provisioning.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/009_mutual_unpairing.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/010_standalone_personal_ledgers.sql"), "utf8"));
+    await admin.query(await readFile(resolve("db/migrations/011_user_scoped_personal_history.sql"), "utf8"));
     const ledger = await admin.query<{ id: string }>(
       `INSERT INTO ledger (name, line_group_id) VALUES ('Worker ledger', 'C-worker')
        RETURNING id::text AS id`,
@@ -192,11 +193,29 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await pool.query("DELETE FROM expense_transaction WHERE public_id='M2KKX888'");
   });
 
-  it("retries a ledger-local public ID collision without partial rows", async () => {
+  it("retries a global public ID collision across ledgers without partial rows", async () => {
+    const foreign = await admin.query<{ id: string }>(
+      "SELECT provision_line_user_ledger('U-collision-owner')::text AS id",
+    );
+    const foreignLedgerId = foreign.rows[0]!.id;
+    await admin.query(
+      `INSERT INTO inbound_event
+       (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+       VALUES ('E-foreign-collision',$1,'message','M-foreign-collision','2026-08-13T04:09:00.123Z',$2::jsonb)`,
+      [foreignLedgerId, JSON.stringify({
+        destination: "U-bot", source: { chatType: "user", userId: "U-collision-owner" },
+        message: { type: "text", text: "其他帳本 10" },
+        replyTokenCiphertext: Buffer.from("cipher-foreign-collision").toString("base64"),
+      })],
+    );
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "CR055333" }))
+      .toMatchObject({ outcome: "applied", publicId: "CR055333" });
+
     await insertTextEvent("E-collision", "M-collision", "咖啡 80");
-    const ids = ["K7M2Q9TX", "ABCDEFGH"];
+    const ids = ["CR055333", "ABCDEFGH"];
     const result = await processNextInboundEvent(pool, { generatePublicId: () => ids.shift()! });
     expect(result).toMatchObject({ outcome: "applied", publicId: "ABCDEFGH" });
+    await pool.query("DELETE FROM expense_transaction WHERE public_id='CR055333'");
     const count = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM expense_transaction");
     expect(count.rows[0]?.count).toBe("2");
   });
@@ -962,13 +981,21 @@ describeWithPostgres("processNextInboundEvent integration", () => {
   });
 
   it("lets each member set a unique nickname used by later cards and reports", async () => {
+    const personal = await admin.query<{ id: string }>(
+      "SELECT provision_line_user_ledger('U-ming')::text AS id",
+    );
+    const personalLedgerId = personal.rows[0]!.id;
     await insertTextEvent("E-nickname", "M-nickname", "設定暱稱 阿明");
     await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
-    const member = await pool.query<{ display_name: string; command_alias: string }>(
-      "SELECT display_name,command_alias FROM member WHERE ledger_id=$1 AND line_user_id='U-ming'",
-      [ledgerId],
+    const members = await pool.query<{ membership_kind: string; display_name: string; command_alias: string }>(
+      `SELECT membership_kind,display_name,command_alias
+         FROM member WHERE line_user_id='U-ming' AND is_active
+        ORDER BY membership_kind`,
     );
-    expect(member.rows[0]).toEqual({ display_name: "阿明", command_alias: "阿明" });
+    expect(members.rows).toEqual([
+      { membership_kind: "couple", display_name: "阿明", command_alias: "阿明" },
+      { membership_kind: "personal", display_name: "阿明", command_alias: "阿明" },
+    ]);
 
     await insertTextEvent("E-nickname-current", "M-nickname-current", "我的暱稱");
     await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
@@ -977,8 +1004,223 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     );
     expect(reply.rows[0]?.alt_text).toContain("阿明");
 
-    await insertTextEvent("E-nickname-reset", "M-nickname-reset", "設定暱稱 小明");
+    await admin.query(
+      `INSERT INTO inbound_event
+       (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+       VALUES ('E-nickname-reset',$1,'message','M-nickname-reset','2026-08-13T04:10:00.123Z',$2::jsonb)`,
+      [personalLedgerId, JSON.stringify({
+        destination: "U-bot", source: { chatType: "user", userId: "U-ming" },
+        message: { type: "text", text: "設定暱稱 小明" },
+        replyTokenCiphertext: Buffer.from("cipher-E-nickname-reset").toString("base64"),
+      })],
+    );
     await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
+    const reset = await pool.query<{ display_name: string; command_alias: string }>(
+      "SELECT display_name,command_alias FROM member WHERE line_user_id='U-ming' AND is_active",
+    );
+    expect(reset.rows).toHaveLength(2);
+    expect(reset.rows).toEqual(expect.arrayContaining([
+      { display_name: "小明", command_alias: "小明" },
+      { display_name: "小明", command_alias: "小明" },
+    ]));
+  });
+
+  it("unifies personal history across private and couple ledgers while excluding the partner", async () => {
+    const personal = await admin.query<{ id: string }>(
+      "SELECT provision_line_user_ledger('U-ming')::text AS id",
+    );
+    const personalLedgerId = personal.rows[0]!.id;
+    const submitToLedger = async (
+      targetLedgerId: string,
+      eventId: string,
+      userId: string,
+      chatType: "group" | "user",
+      text: string,
+    ) => {
+      await admin.query(
+        `INSERT INTO inbound_event
+         (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+         VALUES ($1,$2,'message',$3,'2026-08-17T07:10:00.123Z',$4::jsonb)`,
+        [eventId, targetLedgerId, `M-${eventId}`, JSON.stringify({
+          destination: "U-bot", source: { chatType, userId },
+          message: { type: "text", text },
+          replyTokenCiphertext: Buffer.from(`cipher-${eventId}`).toString("base64"),
+        })],
+      );
+    };
+
+    await submitToLedger(ledgerId, "E-unified-group-create", "U-ming", "group", "個人 統一群組個人 111 #跨帳");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "PER5G111" }))
+      .toMatchObject({ outcome: "applied", publicId: "PER5G111" });
+    await submitToLedger(personalLedgerId, "E-unified-private-create", "U-ming", "user", "統一私訊個人 222 #跨帳");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "PER5P222" }))
+      .toMatchObject({ outcome: "applied", publicId: "PER5P222" });
+
+    for (const [eventId, targetLedgerId, chatType] of [
+      ["E-unified-private-recent", personalLedgerId, "user"],
+      ["E-unified-group-recent", ledgerId, "group"],
+    ] as const) {
+      await submitToLedger(targetLedgerId, eventId, "U-ming", chatType, "最近 2");
+      expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+      const reply = await pool.query<{ alt_text: string }>(
+        `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+           FROM outbox_message WHERE source_webhook_event_id=$1`,
+        [eventId],
+      );
+      expect(reply.rows[0]?.alt_text).toContain("統一群組個人");
+      expect(reply.rows[0]?.alt_text).toContain("統一私訊個人");
+      expect(reply.rows[0]?.alt_text).toContain("333 元");
+    }
+
+    for (const [eventId, text] of [
+      ["E-unified-tag-report", "本月 #跨帳"],
+      ["E-unified-search", "找 統一"],
+    ] as const) {
+      await submitToLedger(personalLedgerId, eventId, "U-ming", "user", text);
+      expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+      const reply = await pool.query<{ alt_text: string }>(
+        `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+           FROM outbox_message WHERE source_webhook_event_id=$1`,
+        [eventId],
+      );
+      expect(reply.rows[0]?.alt_text).toContain("333 元");
+    }
+
+    await submitToLedger(ledgerId, "E-unified-shared-create", "U-ming", "group", "共同 統一共同 555");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "5HARED55" }))
+      .toMatchObject({ outcome: "applied", publicId: "5HARED55" });
+    await submitToLedger(personalLedgerId, "E-unified-all", "U-ming", "user", "最近 3 全部");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const allReply = await pool.query<{ alt_text: string }>(
+      `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+         FROM outbox_message WHERE source_webhook_event_id='E-unified-all'`,
+    );
+    expect(allReply.rows[0]?.alt_text).toContain("統一群組個人");
+    expect(allReply.rows[0]?.alt_text).toContain("統一私訊個人");
+    expect(allReply.rows[0]?.alt_text).toContain("統一共同");
+
+    await submitToLedger(personalLedgerId, "E-unified-shared-private-query", "U-ming", "user", "共同 最近 1");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const sharedReply = await pool.query<{ alt_text: string }>(
+      `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+         FROM outbox_message WHERE source_webhook_event_id='E-unified-shared-private-query'`,
+    );
+    expect(sharedReply.rows[0]?.alt_text).toContain("統一共同");
+
+    await submitToLedger(ledgerId, "E-unified-partner-recent", "U-mei", "group", "最近 20");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const partnerReply = await pool.query<{ alt_text: string }>(
+      `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+         FROM outbox_message WHERE source_webhook_event_id='E-unified-partner-recent'`,
+    );
+    expect(partnerReply.rows[0]?.alt_text).not.toContain("統一群組個人");
+    expect(partnerReply.rows[0]?.alt_text).not.toContain("統一私訊個人");
+
+    await submitToLedger(ledgerId, "E-unified-partner-detail", "U-mei", "group", "查 #PER5G111");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "rejected" });
+    const deniedDetail = await pool.query<{ payload: unknown }>(
+      `SELECT payload_json AS payload
+         FROM outbox_message WHERE source_webhook_event_id='E-unified-partner-detail'`,
+    );
+    expect(JSON.stringify(deniedDetail.rows[0]?.payload)).toContain("找不到這筆交易");
+    expect(JSON.stringify(deniedDetail.rows[0]?.payload)).not.toContain("統一群組個人");
+
+    await submitToLedger(personalLedgerId, "E-unified-edit-group", "U-ming", "user", "改 #PER5G111 金額 333");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied", publicId: "PER5G111" });
+    await submitToLedger(ledgerId, "E-unified-edit-private", "U-ming", "group", "改 #PER5P222 金額 444");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied", publicId: "PER5P222" });
+    const updated = await pool.query<{ public_id: string; amount: string; ledger_id: string }>(
+      `SELECT public_id,amount_minor::text AS amount,ledger_id::text
+         FROM expense_transaction WHERE public_id IN ('PER5G111','PER5P222') ORDER BY public_id`,
+    );
+    expect(updated.rows).toEqual([
+      { public_id: "PER5G111", amount: "333", ledger_id: ledgerId },
+      { public_id: "PER5P222", amount: "444", ledger_id: personalLedgerId },
+    ]);
+    const commandRoutes = await pool.query<{ webhook_event_id: string; ledger_id: string }>(
+      `SELECT webhook_event_id,ledger_id::text FROM inbound_event
+        WHERE webhook_event_id IN ('E-unified-edit-group','E-unified-edit-private')
+        ORDER BY webhook_event_id`,
+    );
+    expect(commandRoutes.rows).toEqual([
+      { webhook_event_id: "E-unified-edit-group", ledger_id: ledgerId },
+      { webhook_event_id: "E-unified-edit-private", ledger_id: personalLedgerId },
+    ]);
+  });
+
+  it("keeps personal history queryable and editable after its old pairing is inactive", async () => {
+    const old = await admin.query<{ id: string }>(
+      "SELECT provision_line_group_ledger('C-historical-personal')::text AS id",
+    );
+    const oldLedgerId = old.rows[0]!.id;
+    await admin.query(
+      `INSERT INTO member (ledger_id,line_user_id,display_name,membership_kind)
+       VALUES ($1,'U-history-owner','歷史本人','couple'),($1,'U-history-partner','舊對象','couple')`,
+      [oldLedgerId],
+    );
+    const submit = async (target: string, eventId: string, text: string) => {
+      await admin.query(
+        `INSERT INTO inbound_event
+         (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+         VALUES ($1,$2,'message',$3,'2026-08-17T07:10:00.123Z',$4::jsonb)`,
+        [eventId, target, `M-${eventId}`, JSON.stringify({
+          destination: "U-bot", source: { chatType: "user", userId: "U-history-owner" },
+          message: { type: "text", text },
+          replyTokenCiphertext: Buffer.from(`cipher-${eventId}`).toString("base64"),
+        })],
+      );
+    };
+    await submit(oldLedgerId, "E-history-old-create", "個人 舊配對中的個人帳 321");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "H15T0RY1" }))
+      .toMatchObject({ outcome: "applied", publicId: "H15T0RY1" });
+    await submit(oldLedgerId, "E-history-old-shared", "共同 舊配對共同帳 999");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "PA5T5HRD" }))
+      .toMatchObject({ outcome: "applied", publicId: "PA5T5HRD" });
+    await admin.query(
+      "UPDATE member SET is_active=false WHERE ledger_id=$1",
+      [oldLedgerId],
+    );
+    await admin.query(
+      "UPDATE ledger SET line_group_id=$2 WHERE id=$1",
+      [oldLedgerId, `archived:${oldLedgerId}:C-historical-personal`],
+    );
+    const personal = await admin.query<{ id: string }>(
+      "SELECT provision_line_user_ledger('U-history-owner')::text AS id",
+    );
+    const personalLedgerId = personal.rows[0]!.id;
+    await submit(personalLedgerId, "E-history-new-create", "現在的個人帳 123");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "H15T0RY2" }))
+      .toMatchObject({ outcome: "applied", publicId: "H15T0RY2" });
+
+    await submit(personalLedgerId, "E-history-recent", "最近 2");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const recent = await pool.query<{ alt_text: string }>(
+      `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+         FROM outbox_message WHERE source_webhook_event_id='E-history-recent'`,
+    );
+    expect(recent.rows[0]?.alt_text).toContain("舊配對中的個人帳");
+    expect(recent.rows[0]?.alt_text).toContain("現在的個人帳");
+    expect(recent.rows[0]?.alt_text).not.toContain("舊配對共同帳");
+
+    await submit(personalLedgerId, "E-history-old-shared-detail", "查 #PA5T5HRD");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "rejected" });
+    const oldShared = await pool.query<{ payload: unknown }>(
+      `SELECT payload_json AS payload
+         FROM outbox_message WHERE source_webhook_event_id='E-history-old-shared-detail'`,
+    );
+    expect(JSON.stringify(oldShared.rows[0]?.payload)).toContain("找不到這筆交易");
+    expect(JSON.stringify(oldShared.rows[0]?.payload)).not.toContain("舊配對共同帳");
+
+    await submit(personalLedgerId, "E-history-edit", "改 #H15T0RY1 金額 654");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied", publicId: "H15T0RY1" });
+    const updated = await pool.query<{ amount: string; event_ledger: string }>(
+      `SELECT expense.amount_minor::text AS amount,event.ledger_id::text AS event_ledger
+         FROM expense_transaction expense
+         JOIN transaction_event audit ON audit.transaction_id=expense.id AND audit.ledger_id=expense.ledger_id
+         JOIN inbound_event event ON event.webhook_event_id=audit.source_webhook_event_id
+        WHERE expense.public_id='H15T0RY1' AND audit.source_webhook_event_id='E-history-edit'`,
+    );
+    expect(updated.rows[0]).toEqual({ amount: "654", event_ledger: oldLedgerId });
   });
 
   async function insertTextEvent(

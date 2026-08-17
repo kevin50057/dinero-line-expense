@@ -6,6 +6,7 @@
 - `scope` 是支出的帳務範圍，不是標籤。它使用獨立 enum：`shared` 或 `personal`。
 - 帳本允許裸格式，`牛肉麵 150` 使用帳本目前的 `default_scope`；初始為 `personal`，可由兩位成員在 LINE 切換，明確 scope 前綴只覆蓋該筆。
 - 建立者、付款人與個人支出的所有人是三個不同概念。改付款人不會連動改所有人。
+- personal transaction 雖仍實體隸屬建立當下的 ledger，其邏輯帳戶以 owner 的 `line_user_id` 辨識；查詢可安全聚合同一 user 在私訊、目前或歷史 ledger 中的個人資料。
 - 分類、餐別與情境標籤共用 `tag`／`transaction_tag`，但由 `tag_type` 保留型別：每筆交易恰好一個分類、至多一個餐別、至多十個 custom/context tags。
 - `occurred_on` 永遠有值；精確時間可以未知。不能用訊息送出時間假裝成補登支出的發生時間。
 - 使用者取消是可還原的 soft void。LINE 收回原始新增訊息是隱私刪除：刪除該筆業務交易、標籤關聯與稽核資料，只留下不含訊息內容的 message tombstone。
@@ -192,6 +193,8 @@ erDiagram
 - `(ledger_id, line_user_id)` 唯一。
 - `membership_kind` 只能是 `personal` 或 `couple`。同一 `line_user_id` 同時至多一個 active personal membership 與一個 active couple membership。
 - personal member 必須屬於自己的 `user:{line_user_id}` ledger；couple member 屬於 LINE 群組 ledger。私訊有 personal membership 時永遠優先路由 personal ledger。
+- `line_user_id` 是個人歷史與暱稱的邏輯 identity key。當個人查詢跨 ledger 聚合時，必須用 personal owner member 的 `line_user_id` 授權，不可用目前 ledger membership 推測所有權。
+- `display_name` 同步至同一 `line_user_id` 的 memberships；`command_alias` 只對 active memberships 使用，且仍受每 ledger active unique 約束。
 - `(ledger_id, command_alias)` 在 active member 中唯一，建議以正規化後字串建立 partial unique index。
 - `(ledger_id, id)` 另建唯一鍵，供所有帶 `ledger_id` 的複合外鍵引用。
 - `is_active = false` 只阻止未來操作，不改變舊交易的建立者、付款人或所有人。
@@ -217,7 +220,7 @@ erDiagram
 
 `expense_transaction` 只保存核心支出資料；分類、餐別與自訂標籤不再直接存在這張表。
 
-- `public_id` 是群組內供人輸入的 opaque ID。使用至少 8 個不易混淆的隨機 Base32 字元，並對 `(ledger_id, public_id)` 建唯一鍵；碰撞時重新產生。不要再使用只有四碼的 `#A1B2` 空間。
+- `public_id` 是供人輸入的 opaque ID。使用至少 8 個不易混淆的隨機 Base32 字元，並建立全域唯一索引；碰撞時重新產生。全域唯一是為了讓使用者跨聊天視窗安全指定自己的交易，不代表 public ID 具有授權能力。
 - `scope` 必填，且只能為 `shared` 或 `personal`。
 - `created_by_member_id`、`payer_member_id` 必填；`personal_owner_member_id` 依 scope 決定是否必填。
 - `amount_minor > 0`；MVP `currency = 'TWD'`。一律用整數最小貨幣單位，不使用 float。
@@ -395,10 +398,10 @@ occurred_on = date(occurred_at AT TIME ZONE ledger.timezone)
 
 ## 權限與 mutation 約束
 
-群組成員可以看到帳本內共同與個人交易，但 mutation 權限不同：
+查詢授權與 mutation 權限使用同一邊界。這是 application data access boundary，不是 LINE 群組顯示層的私密訊息機制：
 
-- `scope = shared`：任一 active、已授權 ledger member 可修改、取消或還原。
-- `scope = personal`：只有 `personal_owner_member_id` 可修改、取消或還原；付款人即使不同也沒有 owner 權限。
+- `scope = shared`：只有 actor 目前 active couple ledger 的任一 active member 可查看、修改、取消或還原。
+- `scope = personal`：只有 owner member 的 `line_user_id` 與 actor 相同時可查看、修改、取消或還原；付款人或同一群組的對方都沒有 owner 權限。
 - 新增 personal 交易時 owner 預設為 actor 本人。若日後新增可替另一人建個人帳的語法，仍須明確保存 owner，不得由 payer 反推。
 - shared 改 personal 時 owner 設為 actor；personal 改 shared 只有原 owner 可執行，轉換後清空 owner。
 - personal owner 可以用明確的「改所有人」指令轉給同帳本另一位 active member；只有目前 owner 可執行。成功後新 owner 立即取得 mutation 權限，原 owner 立即失去權限。
@@ -475,7 +478,7 @@ UUID 主鍵全域唯一仍不足以證明關聯屬於同一帳本。下列關聯
 - message tombstone 的 unsend event → 同 ledger inbox event。
 - outbox 的 source event → 同 ledger inbox event。
 
-所有 public ID 查詢也必須使用 `(ledger_id, public_id)`，找不到或屬於其他 ledger 一律回相同的 not-found 結果，不得先用 `public_id` 全域查詢後再做授權。
+public ID 解析必須在同一個 SQL predicate 內同時驗證全域唯一 `public_id` 與可見邊界：personal owner 的 `line_user_id = actor` 或 shared transaction 屬於 actor 目前 active couple ledger。不可先讀出交易內容再做授權。不存在、對方個人帳、舊配對共同帳與其他 ledger 一律回相同的 not-found。
 
 ## 列舉值
 
@@ -504,7 +507,7 @@ UUID 主鍵全域唯一仍不足以證明關聯屬於同一帳本。下列關聯
 7. occurred_on 必填與 nullable occurred_at 的一致性約束。
 8. inbox、outbox、source message、source event 的 idempotency unique keys。
 9. unsend tombstone、hard purge 與 payload redaction 路徑。
-10. 至少 8 字元 public ID 與 ledger-scoped lookup。
+10. 至少 8 字元、全域唯一 public ID，並在 lookup 同時驗證 user-scoped personal／current-couple shared 可見邊界。
 
 分類器規則也要從第一版保存穩定 `rule_key` 與版本，並使用具邊界或最長詞優先的規則。例如 `飯店` 應先命中旅遊規則，不能因包含單字 `飯` 就被分成食物；規則調整後既有交易仍可由 assignment provenance 解釋。
 

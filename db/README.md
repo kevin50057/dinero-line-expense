@@ -57,6 +57,8 @@ Seed 會明確設定：
 
 `010_standalone_personal_ledgers.sql` 讓個人模式不再依賴配對：公開模式下，陌生使用者第一則私訊文字會經 `provision_line_user_ledger(user_id)` 建立獨立 ledger、14 個 system tags 與 personal member。每個 LINE 身份可同時有一個 personal membership 與一個 couple membership；私訊永遠優先路由 personal ledger，群組才路由 couple ledger，因此配對不會讓個人歷史暴露給對方。共同模式、共同支出、共同查詢與付款人功能仍要求兩位 active couple members。
 
+`011_user_scoped_personal_history.sql` 把個人帳的邏輯邊界改為 LINE user：私訊與群組可安全聚合同一所有人的 personal transactions，而對方的個人帳、舊配對 shared history 仍不可見。此 migration 也將 public ID 設為全域唯一、建立 user-history 索引、同步已選暱稱，並讓 DB mutation guard 允許本人維護解除配對前的 personal history，但不開放舊 shared history。
+
 ## 分類知識表
 
 `004_category_knowledge.sql` 建立 `category_knowledge_rule`，並載入台灣常見消費的系統規則。分類時依序採用帳本專屬精確規則、系統 exact／contains 規則，再回退到程式內的保守分類器。每次命中會更新 `hit_count` 與 `last_matched_at`。
@@ -75,7 +77,7 @@ npm run catalog:sync
 
 - 每筆 `expense_transaction` 和它恰好一個 category tag 必須在同一個 transaction 寫入；deferred constraint 會在 commit 時驗證。meal 至多一個且只能和 `category:food` 共存，自訂標籤至多十個。
 - 只有日期的補登寫 `occurred_at = NULL`、`occurred_time_source = NULL`、`occurred_time_precision = 'unknown'`。有精確時間時，`occurred_on` 必須等於該時間在 ledger timezone 下的日期。
-- 更新交易前，在同一個 DB transaction 呼叫 `assert_expense_actor_can_mutate(ledger_id, transaction_id, actor_member_id)`；它會鎖列並驗證 active member 與 shared／personal owner 權限。更新時 `row_version` 必須剛好加一。
+- 更新交易前，在同一個 DB transaction 呼叫 `assert_expense_actor_can_mutate(ledger_id, transaction_id, actor_member_id)`；它會鎖列並驗證 shared 交易的 active member，或 personal 交易的確定 owner。已停用的舊 membership 只能維護它本來擁有的 personal history。更新時 `row_version` 必須剛好加一。
 - 處理新增訊息與 unsend 時都要使用 `lock_line_message(ledger_id, line_message_id)` 所採用的同一把 transaction-scoped advisory lock。交易 insert 另有 trigger 防止 tombstone 已存在時復活。
 - `inbound_event` 的業務 mutation、audit、outbox enqueue 與 inbox succeeded 必須在同一個 DB transaction commit。
 - worker 用 `FOR UPDATE SKIP LOCKED` claim `pending` inbox／outbox，並同步維護 `status`、`locked_at`、`processed_at`／`sent_at`。

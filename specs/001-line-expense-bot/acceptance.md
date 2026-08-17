@@ -357,14 +357,18 @@ When 阿華傳送「本月」或「查 #K7M2Q9TX」
 Then 不回傳任何帳本內容
 ```
 
-### A28 — 個人支出對另一位已授權成員可見
+### A28 — 配對對方不能主動取得他人個人支出
 
 ```gherkin
 Given #P4V8R3NZ 是小明的 personal 支出
 When 小美傳送「查 #P4V8R3NZ」
-Then 回覆包含 #P4V8R3NZ 的完整業務內容
-And 回覆清楚顯示 personal owner 為小明
-And 個人是帳務歸屬而不是隱私隔離
+Then 回覆與不存在編號相同的 not-found
+And 不回傳項目、金額、標籤、owner 或交易存在性
+
+When 小明在兩人群組主動傳送「最近」
+Then 結果依小明的 user ID 取得小明個人帳
+And LINE 回覆卡片仍顯示在群組，小美可以看到該張由小明主動叫出的卡片
+And 完整使用說明提醒敏感個人查詢應改用私訊
 ```
 
 ### A29 — 個人支出只有 owner 可修改
@@ -477,7 +481,8 @@ Then 回傳排序後的前 5 筆 active 交易
 And 不包含 voided 交易
 
 When 小明傳送「最近 5 共同」或「最近 5 全部」
-Then 才分別回傳共同支出或跨兩人成員的資料
+Then 才分別回傳目前共同支出，或小明個人支出加目前共同支出
+And 兩種查詢都不含小美的個人帳
 ```
 
 ### A36 — 本月摘要預設依操作者個人化並可明確查看共同或全部
@@ -495,13 +500,14 @@ And 不計入已取消的 300
 
 When 小明傳送「本月 個人」
 Then 結果只包含小明 personal 支出 120
-And 這是查詢篩選而不是隱私隔離
+And 小美 personal 支出受可見邊界保護
 
 When 小明傳送「本月 共同」
 Then 結果只包含 shared 支出 500
 
 When 小明傳送「本月 全部」
-Then 回覆不重複總額 700、shared 小計 500、小明 personal 120、小美 personal 80 與對應分類小計
+Then 回覆不重複總額 620、shared 小計 500、小明 personal 120 與對應分類小計
+And 不包含小美 personal 80
 ```
 
 ### A37 — 多標籤統計不重複累加同一筆交易
@@ -1289,4 +1295,36 @@ Then 只路由該群組的 couple ledger
 Given public signup 未啟用且未知使用者私訊任意內容
 When webhook 通過簽章驗證
 Then 不 provision ledger 且不保存 user ID、文字或 reply token
+```
+
+### A90 — 個人歷史跨聊天視窗統一，共同歷史以目前配對為界
+
+```gherkin
+Given 小明在兩人群組建立一筆 personal transaction
+And 小明在機器人私訊建立另一筆 personal transaction
+When 小明分別在群組與私訊傳送「最近 2」或「本月」
+Then 兩處都聚合這兩筆交易且總額一致
+And 小美的預設最近、月報、搜尋不得包含這兩筆
+
+When 小明傳送「全部」篩選
+Then 結果包含小明的全部 personal transactions 與目前配對的 shared transactions
+And 結果不包含小美的 personal transactions
+
+When 小明在私訊用 public ID 修改群組中自己的 personal transaction
+Or 在群組修改私訊建立的 personal transaction
+Then 系統驗證 personal owner 的 line_user_id 後原子完成修改與 audit
+
+When 小美使用小明 personal transaction 的 public ID 查詢或修改
+Then 回覆與不存在編號相同的 not-found
+And 回覆不得包含品項、金額、標籤或帳本存在性
+
+Given 小明與小美的舊配對已雙方同意解除
+When 小明從私訊查詢或編輯
+Then 他過去在舊群組建立的 personal transactions 仍可查詢與編輯
+And 舊 shared transactions 不得出現或被 public ID 開啟
+And 新配對對象不得用自己的指令取得任何舊 personal 或 shared 資料
+
+When 小明在私訊修改暱稱
+Then 他的 active personal 與 active couple membership 暱稱同步更新
+And 新暱稱在每個 active ledger 中都不得與另一位成員重複
 ```

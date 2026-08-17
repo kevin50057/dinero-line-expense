@@ -27,6 +27,8 @@ export interface CommandActor {
   readonly ledgerId: string;
   readonly memberId: string;
   readonly displayName: string;
+  readonly lineUserId: string;
+  readonly coupleLedgerId: string | null;
   readonly timezone: string;
 }
 
@@ -93,6 +95,7 @@ export async function processLedgerCommand(
         "個人：個人 咖啡 80",
         "模式：切換共同模式、切換個人模式、目前模式",
         "暱稱：設定暱稱 小美、我的暱稱",
+        "隱私：群組回覆全群可見，敏感的個人查詢請私訊",
         "付款人：共同交易卡片可切換，或輸入改 #編號 付款人 對方",
         "查詢：最近 5、共同 最近 10、昨天紀錄、查月報、查 6月月報、找 關鍵字、分類排行",
         "修改：最近 5 → 點每筆右側的編輯",
@@ -229,19 +232,30 @@ async function changeNickname(
     return { outcome: "noop", reply: `你的暱稱已經是「${actor.displayName}」。` };
   }
   const duplicate = await client.query(
-    `SELECT 1 FROM member
-      WHERE ledger_id=$1 AND is_active AND id<>$2
-        AND (lower(btrim(display_name))=lower(btrim($3))
-          OR lower(btrim(command_alias))=lower(btrim($3)))`,
-    [actor.ledgerId, actor.memberId, nickname],
+    `WITH actor_ledgers AS (
+       SELECT ledger_id
+         FROM member
+        WHERE line_user_id=$1 AND is_active
+     )
+     SELECT 1
+       FROM actor_ledgers
+       JOIN member other USING (ledger_id)
+      WHERE other.is_active AND other.line_user_id<>$1
+        AND (lower(btrim(other.display_name))=lower(btrim($2))
+          OR lower(btrim(other.command_alias))=lower(btrim($2)))
+      LIMIT 1`,
+    [actor.lineUserId, nickname],
   );
   if (duplicate.rowCount !== 0) return rejected("這個暱稱已被另一位成員使用，請換一個。");
   const updated = await client.query(
-    `UPDATE member SET display_name=$3,command_alias=$3,updated_at=clock_timestamp()
-      WHERE ledger_id=$1 AND id=$2 AND is_active`,
-    [actor.ledgerId, actor.memberId, nickname],
+    `UPDATE member
+        SET display_name=$2,
+            command_alias=CASE WHEN is_active THEN $2 ELSE command_alias END,
+            updated_at=clock_timestamp()
+      WHERE line_user_id=$1`,
+    [actor.lineUserId, nickname],
   );
-  if (updated.rowCount !== 1) throw new Error("member_nickname_update_failed");
+  if (updated.rowCount === 0) throw new Error("member_nickname_update_failed");
   const reply = `暱稱已從「${actor.displayName}」改成「${nickname}」。之後的記帳卡片與報表都會使用新暱稱。`;
   return applied(reply, undefined, infoCard({
     altText: reply,
@@ -404,22 +418,17 @@ async function queryRecent(
   limit: number,
   filter: Extract<LedgerCommand, { kind: "recent" }>["filter"],
 ): Promise<LedgerCommandResult> {
-  const params: unknown[] = [actor.ledgerId, limit];
-  let filterSql = "";
-  if (filter.kind === "personal") {
-    params.push(actor.memberId);
-    filterSql = ` AND et.scope='personal' AND et.personal_owner_member_id=$${params.length}`;
-  } else if (filter.kind === "shared") {
-    filterSql = " AND et.scope='shared'";
-  }
+  const accessSql = accessibleExpenseSql(filter.kind === "tag" ? "all" : filter.kind, "$1", "$2");
   const result = await client.query<ListRow>(
     `SELECT public_id, amount_minor::text, description, scope::text,
             occurred_on::text, occurred_at
        FROM expense_transaction et
-      WHERE ledger_id = $1 AND status = 'active'${filterSql}
-      ORDER BY created_at DESC, id DESC
-      LIMIT $2`,
-    params,
+       LEFT JOIN member personal_owner
+         ON personal_owner.ledger_id=et.ledger_id AND personal_owner.id=et.personal_owner_member_id
+      WHERE status = 'active' AND (${accessSql})
+      ORDER BY et.created_at DESC, et.id DESC
+      LIMIT $3`,
+    [actor.coupleLedgerId, actor.lineUserId, limit],
   );
   const scopeLabel = filter.kind === "personal" ? `${actor.displayName}個人` : filter.kind === "shared" ? "共同" : "全部";
   if (result.rows.length === 0) {
@@ -445,26 +454,24 @@ async function queryPeriod(
   const local = toZonedMinute(event.eventAt, actor.timezone);
   if (local === null) return rejected("無法判定帳本日期，請稍後再試。");
   const { start, end, title } = periodRange(local.date, command.period);
-  const params: unknown[] = [actor.ledgerId, start, end];
-  let filterSql = "";
-  if (command.filter.kind === "shared") filterSql = " AND et.scope = 'shared'";
-  if (command.filter.kind === "personal") {
-    params.push(actor.memberId);
-    filterSql = ` AND et.scope = 'personal' AND et.personal_owner_member_id = $${params.length}`;
-  }
-  if (command.filter.kind === "tag") {
-    params.push(command.filter.name);
-    filterSql = ` AND EXISTS (
+  const accessKind = command.filter.kind === "tag" ? "all" : command.filter.kind;
+  const accessSql = accessibleExpenseSql(accessKind, "$1", "$2");
+  const params: unknown[] = [actor.coupleLedgerId, actor.lineUserId, start, end];
+  const tagSql = command.filter.kind === "tag"
+    ? ` AND EXISTS (
       SELECT 1 FROM transaction_tag tt JOIN tag t ON t.id = tt.tag_id AND t.ledger_id = tt.ledger_id
-       WHERE tt.ledger_id = et.ledger_id AND tt.transaction_id = et.id AND t.normalized_name = $${params.length}
-    )`;
-  }
+       WHERE tt.ledger_id = et.ledger_id AND tt.transaction_id = et.id AND t.normalized_name = $5
+    )`
+    : "";
+  if (command.filter.kind === "tag") params.push(command.filter.name);
   const rows = await client.query<ListRow>(
     `SELECT et.public_id, et.amount_minor::text, et.description, et.scope::text,
             et.occurred_on::text, et.occurred_at
        FROM expense_transaction et
-      WHERE et.ledger_id = $1 AND et.status = 'active'
-        AND et.occurred_on >= $2::date AND et.occurred_on < $3::date${filterSql}
+       LEFT JOIN member personal_owner
+         ON personal_owner.ledger_id=et.ledger_id AND personal_owner.id=et.personal_owner_member_id
+      WHERE et.status = 'active' AND (${accessSql})
+        AND et.occurred_on >= $3::date AND et.occurred_on < $4::date${tagSql}
       ORDER BY et.occurred_on DESC, et.occurred_at DESC NULLS LAST, et.created_at DESC`,
     params,
   );
@@ -474,16 +481,24 @@ async function queryPeriod(
     return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 支出報表", title: `${title}${suffix}`, summary: "0 元", note: "這個期間目前沒有符合條件的支出。", actions: [{ label: "最近紀錄", text: "最近 5" }] }));
   }
 
-  const scopeTotals = await periodScopeTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
-  const memberTotals = await periodMemberTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
-  const sharedCreatorTotals = await periodSharedCreatorTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
-  const sharedPayerTotals = await periodSharedPayerTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
-  const categoryTotals = await periodCategoryTotals(client, actor.ledgerId, start, end, filterSql, params.slice(3));
+  const personalTotal = rows.rows
+    .filter((row) => row.scope === "personal")
+    .reduce((sum, row) => sum + Number(row.amount_minor), 0);
+  const sharedTotal = rows.rows
+    .filter((row) => row.scope === "shared")
+    .reduce((sum, row) => sum + Number(row.amount_minor), 0);
+  const memberTotals = personalTotal === 0
+    ? []
+    : [{ name: actor.displayName, total: String(personalTotal) }];
+  const tagName = command.filter.kind === "tag" ? command.filter.name : null;
+  const sharedCreatorTotals = await periodSharedCreatorTotals(client, actor, start, end, tagName);
+  const sharedPayerTotals = await periodSharedPayerTotals(client, actor, start, end, tagName);
+  const categoryTotals = await periodCategoryTotals(client, actor, start, end, command.filter);
   const showShared = command.filter.kind !== "personal";
   const showPersonal = command.filter.kind !== "shared";
   const reply = [
     `${title}${suffix}：${rows.rows.length} 筆，合計 ${money(sumRows(rows.rows))}`,
-    ...(showShared ? [`共同：${money(scopeTotals.shared)}`] : []),
+    ...(showShared ? [`共同：${money(sharedTotal)}`] : []),
     ...(showShared && sharedCreatorTotals.length > 0
       ? [`共同記帳人：${sharedCreatorTotals.map((row) => `${row.name} ${money(row.total)}`).join("・")}`]
       : []),
@@ -510,7 +525,7 @@ async function queryPeriod(
     summary: money(sumRows(rows.rows)),
     rows: [
       { label: "筆數", value: `${rows.rows.length} 筆` },
-      ...(showShared ? [{ label: "共同支出", value: money(scopeTotals.shared) }] : []),
+      ...(showShared ? [{ label: "共同支出", value: money(sharedTotal) }] : []),
       ...(showShared && sharedCreatorTotals.length > 0 ? [{
         label: "共同支出・依記帳人",
         value: sharedCreatorTotals.map((row) => `${row.name} ${money(row.total)}`).join("・"),
@@ -534,11 +549,14 @@ async function querySearch(client: PoolClient, actor: CommandActor, keyword: str
   const result = await client.query<ListRow>(
     `SELECT public_id, amount_minor::text, description, scope::text,
             occurred_on::text, occurred_at
-       FROM expense_transaction
-      WHERE ledger_id=$1 AND status='active' AND description ILIKE $2 ESCAPE '\\'
-      ORDER BY occurred_on DESC, occurred_at DESC NULLS LAST, created_at DESC, id DESC
+       FROM expense_transaction et
+       LEFT JOIN member personal_owner
+         ON personal_owner.ledger_id=et.ledger_id AND personal_owner.id=et.personal_owner_member_id
+      WHERE status='active' AND (${accessibleExpenseSql("all", "$1", "$2")})
+        AND description ILIKE $3 ESCAPE '\\'
+      ORDER BY occurred_on DESC, occurred_at DESC NULLS LAST, et.created_at DESC, et.id DESC
       LIMIT 20`,
-    [actor.ledgerId, pattern],
+    [actor.coupleLedgerId, actor.lineUserId, pattern],
   );
   const reply = result.rows.length === 0
     ? `找不到包含「${keyword}」的有效記帳紀錄。`
@@ -556,15 +574,7 @@ async function queryRanking(
   const local = toZonedMinute(event.eventAt, actor.timezone);
   if (local === null) return rejected("無法判定帳本日期，請稍後再試。");
   const { start, end, title } = periodRange(local.date, "month");
-  let filterSql = "";
-  const extra: unknown[] = [];
-  if (filter.kind === "personal") {
-    extra.push(actor.memberId);
-    filterSql = " AND et.scope='personal' AND et.personal_owner_member_id=$4";
-  } else if (filter.kind === "shared") {
-    filterSql = " AND et.scope='shared'";
-  }
-  const categories = await periodCategoryTotals(client, actor.ledgerId, start, end, filterSql, extra);
+  const categories = await periodCategoryTotals(client, actor, start, end, filter);
   const total = categories.reduce((sum, row) => sum + Number(row.total), 0);
   const scopeLabel = filter.kind === "personal" ? `${actor.displayName}個人` : filter.kind === "shared" ? "共同" : "全部";
   const reply = categories.length === 0
@@ -641,71 +651,108 @@ function shiftMonth(firstOfMonth: string, amount: number): string {
   return date.toISOString().slice(0, 10);
 }
 
-async function periodMemberTotals(client: PoolClient, ledgerId: string, start: string, end: string, filterSql: string, extra: readonly unknown[]) {
-  const result = await client.query<{ name: string; total: string }>(
-    `SELECT m.display_name AS name, COALESCE(sum(et.amount_minor),0)::text AS total
-       FROM member m
-       LEFT JOIN expense_transaction et ON et.ledger_id=m.ledger_id
-        AND et.personal_owner_member_id=m.id AND et.scope='personal' AND et.status='active'
-        AND et.occurred_on >= $2::date AND et.occurred_on < $3::date${filterSql}
-      WHERE m.ledger_id=$1 AND m.is_active
-      GROUP BY m.id, m.display_name ORDER BY m.created_at, m.id`,
-    [ledgerId, start, end, ...extra],
-  );
-  return result.rows;
-}
-
-async function periodSharedCreatorTotals(client: PoolClient, ledgerId: string, start: string, end: string, filterSql: string, extra: readonly unknown[]) {
+async function periodSharedCreatorTotals(
+  client: PoolClient,
+  actor: CommandActor,
+  start: string,
+  end: string,
+  tagName: string | null,
+) {
+  if (actor.coupleLedgerId === null) return [];
   const result = await client.query<{ name: string; total: string }>(
     `SELECT m.display_name AS name, sum(et.amount_minor)::text AS total
        FROM expense_transaction et
        JOIN member m ON m.ledger_id=et.ledger_id AND m.id=et.created_by_member_id
       WHERE et.ledger_id=$1 AND et.status='active' AND et.scope='shared'
-        AND et.occurred_on >= $2::date AND et.occurred_on < $3::date${filterSql}
+        AND et.occurred_on >= $2::date AND et.occurred_on < $3::date
+        AND ($4::text IS NULL OR EXISTS (
+          SELECT 1 FROM transaction_tag filter_assignment
+          JOIN tag filter_tag ON filter_tag.ledger_id=filter_assignment.ledger_id
+                             AND filter_tag.id=filter_assignment.tag_id
+          WHERE filter_assignment.ledger_id=et.ledger_id
+            AND filter_assignment.transaction_id=et.id
+            AND filter_tag.normalized_name=$4
+        ))
       GROUP BY m.id,m.display_name,m.created_at
       ORDER BY sum(et.amount_minor) DESC,m.created_at,m.id`,
-    [ledgerId, start, end, ...extra],
+    [actor.coupleLedgerId, start, end, tagName],
   );
   return result.rows;
 }
 
-async function periodSharedPayerTotals(client: PoolClient, ledgerId: string, start: string, end: string, filterSql: string, extra: readonly unknown[]) {
+async function periodSharedPayerTotals(
+  client: PoolClient,
+  actor: CommandActor,
+  start: string,
+  end: string,
+  tagName: string | null,
+) {
+  if (actor.coupleLedgerId === null) return [];
   const result = await client.query<{ name: string; total: string }>(
     `SELECT m.display_name AS name, sum(et.amount_minor)::text AS total
        FROM expense_transaction et
        JOIN member m ON m.ledger_id=et.ledger_id AND m.id=et.payer_member_id
       WHERE et.ledger_id=$1 AND et.status='active' AND et.scope='shared'
-        AND et.occurred_on >= $2::date AND et.occurred_on < $3::date${filterSql}
+        AND et.occurred_on >= $2::date AND et.occurred_on < $3::date
+        AND ($4::text IS NULL OR EXISTS (
+          SELECT 1 FROM transaction_tag filter_assignment
+          JOIN tag filter_tag ON filter_tag.ledger_id=filter_assignment.ledger_id
+                             AND filter_tag.id=filter_assignment.tag_id
+          WHERE filter_assignment.ledger_id=et.ledger_id
+            AND filter_assignment.transaction_id=et.id
+            AND filter_tag.normalized_name=$4
+        ))
       GROUP BY m.id,m.display_name,m.created_at
       ORDER BY sum(et.amount_minor) DESC,m.created_at,m.id`,
-    [ledgerId, start, end, ...extra],
+    [actor.coupleLedgerId, start, end, tagName],
   );
   return result.rows;
 }
 
-async function periodScopeTotals(client: PoolClient, ledgerId: string, start: string, end: string, filterSql: string, extra: readonly unknown[]) {
-  const result = await client.query<{ shared: string; personal: string }>(
-    `SELECT COALESCE(sum(et.amount_minor) FILTER (WHERE et.scope='shared'),0)::text AS shared,
-            COALESCE(sum(et.amount_minor) FILTER (WHERE et.scope='personal'),0)::text AS personal
-       FROM expense_transaction et WHERE et.ledger_id=$1 AND et.status='active'
-        AND et.occurred_on >= $2::date AND et.occurred_on < $3::date${filterSql}`,
-    [ledgerId, start, end, ...extra],
-  );
-  return result.rows[0] ?? { shared: "0", personal: "0" };
-}
-
-async function periodCategoryTotals(client: PoolClient, ledgerId: string, start: string, end: string, filterSql: string, extra: readonly unknown[]) {
+async function periodCategoryTotals(
+  client: PoolClient,
+  actor: CommandActor,
+  start: string,
+  end: string,
+  filter: CommandFilter,
+) {
+  const accessKind = filter.kind === "tag" ? "all" : filter.kind;
   const result = await client.query<{ name: string; total: string }>(
     `SELECT t.display_name AS name, sum(et.amount_minor)::text AS total
        FROM expense_transaction et
+       LEFT JOIN member personal_owner
+         ON personal_owner.ledger_id=et.ledger_id AND personal_owner.id=et.personal_owner_member_id
        JOIN transaction_tag tt ON tt.ledger_id=et.ledger_id AND tt.transaction_id=et.id AND tt.tag_type='category'
        JOIN tag t ON t.ledger_id=tt.ledger_id AND t.id=tt.tag_id
-      WHERE et.ledger_id=$1 AND et.status='active'
-        AND et.occurred_on >= $2::date AND et.occurred_on < $3::date${filterSql}
+      WHERE et.status='active' AND (${accessibleExpenseSql(accessKind, "$1", "$2")})
+        AND et.occurred_on >= $3::date AND et.occurred_on < $4::date
+        AND ($5::text IS NULL OR EXISTS (
+          SELECT 1 FROM transaction_tag filter_assignment
+          JOIN tag filter_tag ON filter_tag.ledger_id=filter_assignment.ledger_id
+                             AND filter_tag.id=filter_assignment.tag_id
+          WHERE filter_assignment.ledger_id=et.ledger_id
+            AND filter_assignment.transaction_id=et.id
+            AND filter_tag.normalized_name=$5
+        ))
       GROUP BY t.display_name ORDER BY sum(et.amount_minor) DESC, t.display_name`,
-    [ledgerId, start, end, ...extra],
+    [actor.coupleLedgerId, actor.lineUserId, start, end,
+      filter.kind === "tag" ? filter.name : null],
   );
   return result.rows;
+}
+
+function accessibleExpenseSql(
+  filter: "personal" | "shared" | "all",
+  coupleLedgerParameter: string,
+  lineUserParameter: string,
+): string {
+  const bindCouple = `(${coupleLedgerParameter}::uuid IS NULL OR ${coupleLedgerParameter}::uuid IS NOT NULL)`;
+  const bindUser = `(${lineUserParameter}::text IS NULL OR ${lineUserParameter}::text IS NOT NULL)`;
+  const personal = `(et.scope='personal' AND personal_owner.line_user_id=${lineUserParameter}::text AND ${bindCouple})`;
+  const shared = `(et.scope='shared' AND et.ledger_id=${coupleLedgerParameter}::uuid AND ${bindUser})`;
+  if (filter === "personal") return personal;
+  if (filter === "shared") return shared;
+  return `(${personal} OR ${shared})`;
 }
 
 async function changeStatus(
@@ -719,6 +766,7 @@ async function changeStatus(
   if (expense === null) return notFound();
   const denied = authorizeMutation(expense, actor.memberId);
   if (denied !== null) return denied;
+  await assertMutationAccess(client, actor, expense.id);
   const desired = operation === "void" ? "voided" : "active";
   if (expense.status === desired) return noop(operation === "void" ? "這筆已取消。" : "這筆目前已是有效狀態。", publicId);
   const before = statusSnapshot(expense);
@@ -750,6 +798,7 @@ async function changeCustomTags(
   if (expense === null) return notFound();
   const denied = validateMutable(expense, actor.memberId);
   if (denied !== null) return denied;
+  await assertMutationAccess(client, actor, expense.id);
   const current = await loadCustomTags(client, actor.ledgerId, expense.id);
   const currentSet = new Set(current);
   if (operation === "add" && new Set([...current, ...names]).size > 10) return rejected("每筆最多 10 個自訂標籤。", publicId);
@@ -789,6 +838,7 @@ async function updateExpense(
   if (expense === null) return notFound();
   const denied = validateMutable(expense, actor.memberId);
   if (denied !== null) return denied;
+  await assertMutationAccess(client, actor, expense.id);
 
   if (change.field === "amount") {
     if (Number(expense.amount_minor) === change.value) return noop("金額沒有變更。", publicId);
@@ -1214,6 +1264,17 @@ function authorizeMutation(expense: ExpenseRow, memberId: string): LedgerCommand
   return expense.scope === "personal" && expense.personal_owner_member_id !== memberId
     ? rejected("只有這筆個人支出的所有人可修改、取消或還原。", expense.public_id)
     : null;
+}
+
+async function assertMutationAccess(
+  client: PoolClient,
+  actor: CommandActor,
+  transactionId: string,
+): Promise<void> {
+  await client.query(
+    "SELECT assert_expense_actor_can_mutate($1,$2,$3)",
+    [actor.ledgerId, transactionId, actor.memberId],
+  );
 }
 
 function listCard(title: string, rows: readonly ListRow[], altText: string, note: string, actions: readonly { label: string; text: string }[]): LineReplyMessage {
