@@ -55,6 +55,8 @@ Seed 會明確設定：
 
 `009_mutual_unpairing.sql` 新增雙方同意解除流程。`解除配對` 只建立 24 小時 pending request；必須由另一位 active member 確認。完成時兩個 member 身份同時停用，舊 ledger 改用不可路由的 archived group ID，並為原 LINE 群組建立全新空 ledger。這可讓雙方重新配對，同時阻止未來成員讀到上一組的歷史資料。
 
+`010_standalone_personal_ledgers.sql` 讓個人模式不再依賴配對：公開模式下，陌生使用者第一則私訊文字會經 `provision_line_user_ledger(user_id)` 建立獨立 ledger、14 個 system tags 與 personal member。每個 LINE 身份可同時有一個 personal membership 與一個 couple membership；私訊永遠優先路由 personal ledger，群組才路由 couple ledger，因此配對不會讓個人歷史暴露給對方。共同模式、共同支出、共同查詢與付款人功能仍要求兩位 active couple members。
+
 ## 分類知識表
 
 `004_category_knowledge.sql` 建立 `category_knowledge_rule`，並載入台灣常見消費的系統規則。分類時依序採用帳本專屬精確規則、系統 exact／contains 規則，再回退到程式內的保守分類器。每次命中會更新 `hit_count` 與 `last_matched_at`。

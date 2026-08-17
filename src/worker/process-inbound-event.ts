@@ -9,10 +9,11 @@ import { generatePublicId } from "../application/public-id.js";
 import {
   pairingGuideCard,
   pairingStatusCard,
+  standalonePersonalCard,
   unpairConsentCard,
 } from "../application/line-cards.js";
 import { inferMeal, parseExpenseMessage, parseLedgerCommand } from "../domain/index.js";
-import type { ParsedExpense, TypedTag } from "../domain/index.js";
+import type { LedgerCommand, ParsedExpense, TypedTag } from "../domain/index.js";
 import type { LineReplyMessage } from "../outbox/payload.js";
 import { processLedgerCommand } from "./process-ledger-command.js";
 import { resolveCategoryKnowledge } from "./category-knowledge.js";
@@ -66,6 +67,7 @@ interface LedgerMember {
   allow_bare_entry: boolean;
   member_id: string;
   display_name: string;
+  membership_kind: "personal" | "couple";
 }
 
 interface TextPayload {
@@ -299,6 +301,13 @@ async function processMessage(
   }
 
   if (isPairingCommand(payload.message.text.normalize("NFKC").trim())) {
+    if (identity.membership_kind === "personal") {
+      const reply = "你現在就是個人模式，不需要配對也能直接記帳。若要共同記帳，請建立兩人 LINE 群組並把機器人加入。";
+      await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
+        "member_pairing_result", reply, standalonePersonalCard(reply));
+      await finish(client, event, "noop");
+      return processedResult(event, "noop");
+    }
     await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
       "member_pairing_result", `你已經完成配對，帳本身份是「${identity.display_name}」。`);
     await finish(client, event, "noop");
@@ -333,6 +342,14 @@ async function processMessage(
     if (await lockAndCheckTombstone(client, event)) {
       await finish(client, event, "ignored_unsent");
       return processedResult(event, "ignored_unsent");
+    }
+    if (ledgerCommandRequiresCompletePair(command.command)
+        && !await hasCompletePair(client, event.ledger_id)) {
+      const reply = "這是共同功能，必須先完成兩人配對。個人記帳、最近紀錄與個人月報都不需要配對。";
+      await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
+        "ledger_command_result", reply, standalonePersonalCard(reply));
+      await finish(client, event, "rejected");
+      return processedResult(event, "rejected");
     }
     const commandResult = await processLedgerCommand(
       client,
@@ -390,6 +407,14 @@ async function processMessage(
       "expense_create_rejected",
       formatExpenseParseErrorReply(parsed.error),
     );
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+
+  if (parsed.value.scope === "shared" && !await hasCompletePair(client, event.ledger_id)) {
+    const reply = "共同支出必須先完成兩人配對；你仍可直接記成個人支出，例如「晚餐 300」。";
+    await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
+      "expense_create_rejected", reply, standalonePersonalCard(reply));
     await finish(client, event, "rejected");
     return processedResult(event, "rejected");
   }
@@ -487,7 +512,8 @@ async function pairLedgerMember(
   );
   const destination = ledger.rows[0]?.line_group_id ?? null;
   const members = await client.query<{ count: string }>(
-    "SELECT count(*)::text AS count FROM member WHERE ledger_id=$1 AND is_active",
+    `SELECT count(*)::text AS count FROM member
+      WHERE ledger_id=$1 AND is_active AND membership_kind='couple'`,
     [event.ledger_id],
   );
   const memberCount = Number(members.rows[0]?.count ?? 0);
@@ -500,7 +526,7 @@ async function pairLedgerMember(
   const existing = await client.query<{ line_group_id: string }>(
     `SELECT l.line_group_id
        FROM member m JOIN ledger l ON l.id=m.ledger_id
-      WHERE m.line_user_id=$1 AND m.is_active`,
+      WHERE m.line_user_id=$1 AND m.is_active AND m.membership_kind='couple'`,
     [lineUserId],
   );
   if (existing.rowCount !== 0) {
@@ -510,8 +536,8 @@ async function pairLedgerMember(
     return processedResult(event, "rejected");
   }
   const inserted = await client.query(
-    `INSERT INTO member (ledger_id,line_user_id,display_name,command_alias)
-     VALUES ($1,$2,'新成員',NULL)
+    `INSERT INTO member (ledger_id,line_user_id,display_name,command_alias,membership_kind)
+     VALUES ($1,$2,'新成員',NULL,'couple')
      ON CONFLICT DO NOTHING`,
     [event.ledger_id, lineUserId],
   );
@@ -563,6 +589,15 @@ async function processPairingManagement(
   action: PairingManagementAction,
   replyTokenCiphertext: string | undefined,
 ): Promise<ProcessInboundEventResult> {
+  if (identity.membership_kind === "personal") {
+    const reply = action === "status"
+      ? "你目前使用獨立個人帳，不需要配對；只有共同模式才需要在兩人群組完成配對。"
+      : "個人帳沒有配對關係可解除；你可以繼續直接記帳。";
+    await enqueueReply(client, event, identity.line_group_id, replyTokenCiphertext,
+      "member_pairing_result", reply, standalonePersonalCard(reply));
+    await finish(client, event, action === "status" ? "applied" : "rejected");
+    return processedResult(event, action === "status" ? "applied" : "rejected");
+  }
   await client.query("SELECT id FROM ledger WHERE id=$1 FOR UPDATE", [event.ledger_id]);
   await client.query(
     `UPDATE pairing_dissolution_request
@@ -710,10 +745,34 @@ async function processPairingManagement(
 async function loadActivePairMembers(client: PoolClient, ledgerId: string): Promise<ActivePairMember[]> {
   const result = await client.query<ActivePairMember>(
     `SELECT id::text,display_name FROM member
-      WHERE ledger_id=$1 AND is_active ORDER BY created_at,id FOR UPDATE`,
+      WHERE ledger_id=$1 AND is_active AND membership_kind='couple'
+      ORDER BY created_at,id FOR UPDATE`,
     [ledgerId],
   );
   return result.rows;
+}
+
+async function hasCompletePair(client: PoolClient, ledgerId: string): Promise<boolean> {
+  const result = await client.query<{ count: string }>(
+    `SELECT count(*)::text AS count FROM member
+      WHERE ledger_id=$1 AND is_active AND membership_kind='couple'`,
+    [ledgerId],
+  );
+  return result.rows[0]?.count === "2";
+}
+
+function ledgerCommandRequiresCompletePair(command: LedgerCommand): boolean {
+  if (command.kind === "mode") return command.scope === "shared";
+  if (command.kind === "bulk_payer") return true;
+  if (command.kind === "recent" || command.kind === "period" || command.kind === "ranking") {
+    return command.filter.kind === "shared";
+  }
+  if (command.kind === "update") {
+    return (command.change.field === "scope" && command.change.value === "shared")
+      || command.change.field === "payer"
+      || command.change.field === "owner";
+  }
+  return false;
 }
 
 async function loadPendingDissolution(client: PoolClient, ledgerId: string): Promise<PendingDissolution | null> {
@@ -757,7 +816,7 @@ async function loadIdentity(
   const result = await client.query<LedgerMember>(
     `SELECT l.id::text AS ledger_id, l.line_group_id, l.timezone,
             l.default_scope::text, l.allow_bare_entry,
-            m.id::text AS member_id, m.display_name
+            m.id::text AS member_id, m.display_name, m.membership_kind
        FROM ledger l
        JOIN member m ON m.ledger_id = l.id AND m.line_user_id = $2 AND m.is_active
       WHERE l.id = $1`,

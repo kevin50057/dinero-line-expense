@@ -125,6 +125,26 @@ describe("handleLineWebhook", () => {
     ]);
   });
 
+  it("allows an unknown user to start a private personal ledger in public mode", async () => {
+    const acceptBatch = vi.fn<LineEventInbox["acceptBatch"]>().mockResolvedValue();
+    const body = signedBody([{
+      ...messageEvent("U-new-personal"),
+      source: { type: "user", userId: "U-new-personal" },
+    }]);
+
+    await handleLineWebhook(body.rawBody, body.signature, {
+      channelSecret,
+      allowedGroupId: "C-ledger",
+      allowedMemberUserIds: new Set(["U-ming", "U-mei"]),
+      publicSignupEnabled: true,
+      inbox: { acceptBatch },
+    });
+
+    expect(acceptBatch).toHaveBeenCalledWith("U-bot", [
+      expect.objectContaining({ authorization: { authorized: true } }),
+    ]);
+  });
+
   it("returns a retryable result if the durable inbox is unavailable", async () => {
     const body = signedBody([messageEvent()]);
 

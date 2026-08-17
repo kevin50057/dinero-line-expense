@@ -4,6 +4,7 @@ import {
   helpCards,
   infoCard,
   pairingStatusCard,
+  standalonePersonalCard,
   unpairConsentCard,
 } from "../../src/application/line-cards.js";
 import { parseLineReplyPayload } from "../../src/outbox/index.js";
@@ -95,5 +96,11 @@ describe("LINE Flex card builders", () => {
     expect(JSON.stringify(status)).toContain('"label":"取消申請"');
     expect(JSON.stringify(consent)).toContain('"label":"同意解除"');
     expect(JSON.stringify(consent)).toContain('"color":"#FFFFFF"');
+  });
+
+  it("builds a valid standalone personal-mode card", () => {
+    const card = standalonePersonalCard("個人模式不需要配對");
+    expect(parseLineReplyPayload({ messages: [card] })).toEqual({ messages: [card] });
+    expect(JSON.stringify(card)).toContain("不用配對，直接記帳");
   });
 });

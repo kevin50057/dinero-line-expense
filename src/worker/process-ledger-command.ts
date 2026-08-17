@@ -83,6 +83,7 @@ export async function processLedgerCommand(
     case "help":
       {
       const reply = [
+        "個人：直接私訊牛肉麵 150，不需要配對",
         "配對：第一位輸入建立配對，第二位輸入配對",
         "狀態：配對狀態",
         "解除：一人輸入解除配對，另一人輸入同意解除",

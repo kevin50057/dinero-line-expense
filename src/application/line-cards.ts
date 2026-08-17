@@ -55,19 +55,19 @@ export function helpCards(altText: string): LineReplyFlexMessage {
     type: "carousel",
     contents: [
       bubble(
-        header("DINERO 配對開始", "兩個人，一本帳"),
+        header("DINERO 快速開始", "個人直接用，配對是選配"),
         body([
-          rowBox({ label: "第 1 步", value: "建立兩人 LINE 群組並加入機器人" }),
+          rowBox({ label: "個人記帳", value: "直接私訊機器人：牛肉麵 150" }),
           separator("md"),
-          rowBox({ label: "第 2 步", value: "第一人傳送「建立配對」" }),
+          rowBox({ label: "不需配對", value: "最近、月報、分類與修改都能使用" }),
           separator("md"),
-          rowBox({ label: "第 3 步", value: "第二人傳送「配對」" }),
+          rowBox({ label: "共同記帳", value: "建立兩人群組並加入機器人" }),
           separator("md"),
-          rowBox({ label: "設定名字", value: "設定暱稱 小美" }),
+          rowBox({ label: "完成配對", value: "第一人「建立配對」、第二人「配對」" }),
           separator("md"),
           rowBox({ label: "解除配對", value: "一人申請、另一人同意才生效" }),
         ]),
-        footer([{ label: "建立配對", text: "建立配對" }, { label: "配對狀態", text: "配對狀態" }]),
+        footer([{ label: "最近紀錄", text: "最近 5" }, { label: "配對狀態", text: "配對狀態" }]),
       ),
       bubble(
         header("DINERO 快速開始", "一句話就能記帳"),
@@ -139,8 +139,24 @@ export function pairingGuideCard(altText: string): LineReplyFlexMessage {
       { label: "完成後", value: "兩人各自傳送「設定暱稱 名字」" },
       { label: "解除時", value: "一人傳送「解除配對」，另一人同意" },
     ],
-    note: "每個 LINE 帳號一次只會連到一組配對，私訊記帳才不會跑錯帳本。",
+    note: "每個 LINE 帳號最多加入一組配對；原本的私訊個人帳會保持獨立。",
     actions: [{ label: "建立配對", text: "建立配對" }, { label: "配對狀態", text: "配對狀態" }],
+  });
+}
+
+export function standalonePersonalCard(altText: string): LineReplyFlexMessage {
+  return infoCard({
+    altText,
+    kicker: "DINERO 個人模式",
+    title: "不用配對，直接記帳",
+    rows: [
+      { label: "快速記帳", value: "牛肉麵 150" },
+      { label: "查看紀錄", value: "最近 5" },
+      { label: "本月報表", value: "查月報" },
+      { label: "想用共同帳", value: "建立兩人群組，再加入機器人配對" },
+    ],
+    note: "你的私訊個人帳不會因日後配對而交給對方查看。",
+    actions: [{ label: "最近紀錄", text: "最近 5" }, { label: "完整說明", text: "使用說明" }],
   });
 }
 

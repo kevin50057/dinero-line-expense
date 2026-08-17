@@ -121,8 +121,13 @@ export class PostgresLineEventInbox implements LineEventInbox {
         if (ledgerId === undefined) {
           if (source.type === "user" && source.userId !== undefined) {
             const privateLedgerId = await resolvePrivateLedgerId(client, source.userId);
-            if (privateLedgerId === null) continue;
-            ledgerId = privateLedgerId;
+            if (privateLedgerId !== null) {
+              ledgerId = privateLedgerId;
+            } else if (acceptedEvent.authorization.authorized && isPrivateSelfServiceText(acceptedEvent.event)) {
+              ledgerId = await provisionPrivateLedgerId(client, source.userId);
+            } else {
+              continue;
+            }
           } else {
             const groupId = source.groupId;
             if (groupId === undefined || groupId.length === 0) {
@@ -282,16 +287,37 @@ async function resolvePrivateLedgerId(
   const result = await client.query<{ id: string }>(
     `SELECT l.id::text AS id
        FROM ledger l
-       JOIN member m ON m.ledger_id = l.id
+      JOIN member m ON m.ledger_id = l.id
       WHERE m.line_user_id = $1
-        AND m.is_active`,
+        AND m.is_active
+      ORDER BY CASE m.membership_kind WHEN 'personal' THEN 0 ELSE 1 END,
+               m.created_at, m.id
+      LIMIT 1`,
     [lineUserId],
   );
   const ledgerId = result.rows[0]?.id;
-  if (result.rowCount !== 1 || ledgerId === undefined) {
+  if (ledgerId === undefined) {
     return null;
   }
   return ledgerId;
+}
+
+function isPrivateSelfServiceText(event: AcceptedLineEvent["event"]): boolean {
+  return event.source.type === "user"
+    && event.kind === "message"
+    && event.message?.type === "text"
+    && typeof event.message.text === "string"
+    && event.source.userId !== undefined;
+}
+
+async function provisionPrivateLedgerId(client: PoolClient, lineUserId: string): Promise<string> {
+  const result = await client.query<{ id: string }>(
+    "SELECT provision_line_user_ledger($1)::text AS id",
+    [lineUserId],
+  );
+  const id = result.rows[0]?.id;
+  if (id === undefined) throw new LineInboxLedgerNotFoundError();
+  return id;
 }
 
 async function resolveOrProvisionLedgerId(

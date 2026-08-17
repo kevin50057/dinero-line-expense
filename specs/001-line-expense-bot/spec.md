@@ -34,6 +34,7 @@
 9. MVP 做帳目 CRUD；系統分類本身不提供新增、改名或刪除。
 10. LINE 原生編輯不自動同步帳目；LINE 收回原始新增訊息時清除該筆帳目內容。
 11. 開放多組使用者自助配對：每個 LINE 群組是一個獨立帳本，第一位輸入 `建立配對`、第二位輸入 `配對`；同一 LINE 帳號同時只能有一個 active 配對。
+12. 個人使用不要求配對：第一則私訊文字自動建立獨立個人帳；同一 LINE 帳號可同時有一個 personal membership 與一個 couple membership，私訊優先路由個人帳。
 
 ## 3. MVP 範圍
 
@@ -47,7 +48,7 @@
 - 軟取消與還原。
 - webhook 驗證、依事件型別授權、去重、失敗重試及可觀測的回覆流程。
 - 完整稽核，不因 webhook 重送重複建立或修改。
-- 新群組自動 provisioning、兩位成員自助配對、跨帳本資料隔離與唯一私訊路由。
+- 新群組與新個人使用者自動 provisioning、兩位成員自助配對，以及個人／共同帳本資料隔離與確定性私訊路由。
 - LINE 內可用 `使用說明` 開啟涵蓋配對、記帳、查詢、修改與付款人的完整說明卡。
 
 ### 3.2 這一版不做
@@ -58,7 +59,7 @@
 - 銀行、信用卡或電子支付串接。
 - 多幣別與匯率換算。
 - 分類／標籤管理後台。
-- 真正私密、對另一位群組成員不可見的個人帳。
+- 同一個兩人群組 ledger 內、對另一位群組成員完全隱藏的個人交易；真正私密資料應記在私訊個人 ledger。
 - LINE 原生編輯訊息自動同步。
 - 付費方案、帳務管理後台與完整 Web SaaS 營運功能。
 - 使用生成式 AI 決定金額或直接寫入資料庫。
@@ -348,6 +349,15 @@
 - 完成解除時，在同一 DB transaction 將申請標為 confirmed、停用兩位 member、把舊 ledger 的 LINE group route 改為 archived ID，並為原群組 provision 全新空 ledger 與 system tags。
 - 舊交易與稽核資料不交給 replacement ledger 或未來配對成員；兩個已停用 LINE 身份不再能以私訊路由到舊 ledger，且可分別加入新的 active 配對。
 - 解除完成前的 LINE 回覆不得宣稱已解除；所有卡片需清楚顯示仍在等待另一方確認。
+
+### 7.9 不需配對的獨立個人帳
+
+- 公開自助模式下，尚無身份的 LINE 使用者傳送第一則私訊文字時，系統原子建立專屬 personal ledger、完整 system tags 與一位 personal member，並繼續處理原訊息，不要求先輸入 onboarding 指令。
+- 個人 ledger 的 default scope 固定從 personal 開始；一般新增、最近、個人期間報表、搜尋、分類、標籤、修改、取消與還原不需要配對。
+- 切換共同模式、建立 shared expense、共同查詢、對方付款與批次付款人都必須有剛好兩位 active couple members，否則拒絕且不得部分寫入。
+- 每個 LINE user 同時至多一個 active personal membership 與一個 active couple membership。完成或解除配對不得停用、移動、複製或揭露 personal ledger 的歷史資料。
+- 私訊路由有 personal membership 時必須優先使用 personal ledger；沒有 personal membership 時，為相容既有使用者，可回退至唯一 active couple ledger。群組訊息只路由該群組的 couple ledger。
+- 未啟用公開自助模式時，未在 allowlist 且無 DB membership 的私訊仍不保存內容。
 
 ## 8. LINE 原生事件
 

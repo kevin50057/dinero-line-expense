@@ -123,6 +123,13 @@ describe("authorizeLineEvent", () => {
         policy,
       ),
     ).toEqual({ authorized: false, reason: "member_not_allowed" });
+
+    expect(
+      authorizeLineEvent(
+        event("message", { type: "user", userId: "U-stranger" }),
+        { ...policy, allowUnlistedGroups: true },
+      ),
+    ).toEqual({ authorized: true });
   });
 
   it("rejects unsupported and malformed group sources", () => {

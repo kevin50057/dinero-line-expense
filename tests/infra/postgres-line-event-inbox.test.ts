@@ -288,6 +288,47 @@ describeWithPostgres("PostgresLineEventInbox integration", () => {
     });
   });
 
+  it("provisions a private personal ledger without pairing and prefers it over a couple membership", async () => {
+    const inbox = testInbox();
+    const first = {
+      ...textEvent("E-solo-first", "M-solo-first", "咖啡 80"),
+      source: { type: "user" as const, userId: "U-solo" },
+    };
+    await inbox.acceptBatch("U-bot", [acceptedEvent(first)]);
+
+    const personal = await pool.query<{
+      id: string; route: string; kind: string; tag_count: string; text: string;
+    }>(
+      `SELECT ledger.id::text,ledger.line_group_id AS route,member.membership_kind AS kind,
+              count(DISTINCT tag.id)::text AS tag_count,
+              max(event.payload_json->'message'->>'text') AS text
+         FROM ledger
+         JOIN member ON member.ledger_id=ledger.id AND member.line_user_id='U-solo' AND member.is_active
+         JOIN tag ON tag.ledger_id=ledger.id AND tag.is_system
+         JOIN inbound_event event ON event.ledger_id=ledger.id
+        WHERE ledger.line_group_id='user:U-solo'
+        GROUP BY ledger.id,member.membership_kind`,
+    );
+    expect(personal.rows[0]).toMatchObject({
+      route: "user:U-solo", kind: "personal", tag_count: "14", text: "咖啡 80",
+    });
+
+    await pool.query(
+      `INSERT INTO member (ledger_id,line_user_id,display_name,membership_kind)
+       VALUES ($1,'U-solo','群組身份','couple')`,
+      [ledgerId],
+    );
+    const second = {
+      ...textEvent("E-solo-second", "M-solo-second", "晚餐 120"),
+      source: { type: "user" as const, userId: "U-solo" },
+    };
+    await inbox.acceptBatch("U-bot", [acceptedEvent(second)]);
+    const routed = await pool.query<{ ledger_id: string }>(
+      "SELECT ledger_id::text FROM inbound_event WHERE webhook_event_id='E-solo-second'",
+    );
+    expect(routed.rows[0]?.ledger_id).toBe(personal.rows[0]?.id);
+  });
+
   it("keeps non-text content empty and stores only minimal edit/join delivery metadata", async () => {
     const inbox = testInbox();
     await inbox.acceptBatch("U-bot", [

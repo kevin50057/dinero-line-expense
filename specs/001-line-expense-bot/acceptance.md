@@ -1165,9 +1165,9 @@ Given 帳本已有兩位 active member
 When 第三位群組成員傳送「配對」
 Then 不建立 member 且回覆帳本無法接受新成員
 
-Given 某 LINE 帳號已在另一個 ledger 有 active member 身份
+Given 某 LINE 帳號已在另一個 ledger 有 active couple member 身份
 When 該帳號嘗試加入新配對
-Then 不建立第二個 active 身份且回覆必須先解除原配對
+Then 不建立第二個 active couple 身份且回覆必須先解除原配對
 
 When 未授權成員傳送任何不是配對或說明 allowlist 的訊息
 Then 不保存 user ID、訊息文字或 reply token
@@ -1257,4 +1257,36 @@ And 兩人都可以各自加入新的 active 配對
 Given pending request 已超過 expires_at
 When 任一人傳送「配對狀態」或解除相關指令
 Then 舊 request 原子標為 expired 且不能再被同意
+```
+
+### A89 — 個人模式不需配對且可安全升級使用共同帳
+
+```gherkin
+Given public signup 已啟用且新 LINE 使用者尚無任何 member
+When 她私訊「牛肉麵 150」
+Then 系統建立一個 route 為該 user 的獨立 personal ledger、完整 system tags 與 personal member
+And 同一個 webhook transaction 繼續建立 personal expense
+And 不要求輸入「建立配對」或「配對」
+
+When 她私訊「最近 5」、「查月報」、修改或取消自己的交易
+Then 指令正常執行且只存取她的 personal ledger
+
+When 她在未配對狀態傳送「共同 晚餐 800」、「切換共同模式」或「共同 最近 5」
+Then 原子拒絕並說明共同功能需要兩人配對
+
+Given 她已有 active personal membership
+When 她之後在兩人群組建立或加入配對
+Then 可另建立 active couple membership，personal membership 與既有個人交易維持不變
+
+Given 她同時有 personal 與 couple memberships
+When 她私訊機器人
+Then inbox 確定性路由 personal ledger
+And 對方無法透過 couple ledger 查詢、修改或取得該 personal ledger 的交易
+
+When 她在兩人群組操作
+Then 只路由該群組的 couple ledger
+
+Given public signup 未啟用且未知使用者私訊任意內容
+When webhook 通過簽章驗證
+Then 不 provision ledger 且不保存 user ID、文字或 reply token
 ```

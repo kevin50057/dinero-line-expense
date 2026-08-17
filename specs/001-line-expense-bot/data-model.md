@@ -55,6 +55,7 @@ erDiagram
       string line_user_id
       string display_name
       string command_alias
+      string membership_kind
       boolean is_active
       timestamp created_at
       timestamp updated_at
@@ -178,6 +179,7 @@ erDiagram
 
 ### `ledger`
 
+- 群組 ledger 的 `line_group_id` 保存 LINE group ID；獨立個人 ledger 使用內部 `user:{line_user_id}` route key。兩者都必須全域唯一。
 - `default_scope expense_scope NOT NULL DEFAULT 'personal'`；此欄位同時是群組目前的持久記帳模式。
 - `allow_bare_entry BOOLEAN NOT NULL DEFAULT true`。
 - `timezone TEXT NOT NULL DEFAULT 'Asia/Taipei'`；日期界線、相對日期與餐別判定都讀這個值，不能讀 DB server timezone。
@@ -188,6 +190,8 @@ erDiagram
 ### `member`
 
 - `(ledger_id, line_user_id)` 唯一。
+- `membership_kind` 只能是 `personal` 或 `couple`。同一 `line_user_id` 同時至多一個 active personal membership 與一個 active couple membership。
+- personal member 必須屬於自己的 `user:{line_user_id}` ledger；couple member 屬於 LINE 群組 ledger。私訊有 personal membership 時永遠優先路由 personal ledger。
 - `(ledger_id, command_alias)` 在 active member 中唯一，建議以正規化後字串建立 partial unique index。
 - `(ledger_id, id)` 另建唯一鍵，供所有帶 `ledger_id` 的複合外鍵引用。
 - `is_active = false` 只阻止未來操作，不改變舊交易的建立者、付款人或所有人。

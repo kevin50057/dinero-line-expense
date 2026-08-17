@@ -39,6 +39,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await admin.query(await readFile(resolve("db/migrations/007_batch_transaction_event_source.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/008_public_pairing_provisioning.sql"), "utf8"));
     await admin.query(await readFile(resolve("db/migrations/009_mutual_unpairing.sql"), "utf8"));
+    await admin.query(await readFile(resolve("db/migrations/010_standalone_personal_ledgers.sql"), "utf8"));
     const ledger = await admin.query<{ id: string }>(
       `INSERT INTO ledger (name, line_group_id) VALUES ('Worker ledger', 'C-worker')
        RETURNING id::text AS id`,
@@ -573,6 +574,59 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     );
     expect(result.rows[0]?.count).toBe("1");
     expect(result.rows[0]?.text).toContain("第一位成員");
+  });
+
+  it("lets a standalone personal member record expenses without pairing and blocks shared features", async () => {
+    const provisioned = await admin.query<{ id: string }>(
+      "SELECT provision_line_user_ledger('U-standalone-worker')::text AS id",
+    );
+    const personalLedgerId = provisioned.rows[0]!.id;
+    const submit = async (eventId: string, text: string) => {
+      await admin.query(
+        `INSERT INTO inbound_event
+         (webhook_event_id,ledger_id,event_type,line_message_id,line_event_at,payload_json)
+         VALUES ($1,$2,'message',$3,'2026-08-13T04:10:00.123Z',$4::jsonb)`,
+        [eventId, personalLedgerId, `M-${eventId}`, JSON.stringify({
+          destination: "U-bot",
+          source: { chatType: "user", userId: "U-standalone-worker" },
+          message: { type: "text", text },
+          replyTokenCiphertext: Buffer.from(`cipher-${eventId}`).toString("base64"),
+        })],
+      );
+    };
+
+    await submit("E-standalone-create", "牛肉麵 150");
+    expect(await processNextInboundEvent(pool, { generatePublicId: () => "S0M0PER8" }))
+      .toMatchObject({ outcome: "applied", publicId: "S0M0PER8" });
+    const expense = await pool.query<{ scope: string; owner: string; kind: string }>(
+      `SELECT transaction.scope::text,owner.line_user_id AS owner,owner.membership_kind AS kind
+         FROM expense_transaction transaction
+         JOIN member owner ON owner.id=transaction.personal_owner_member_id
+        WHERE transaction.ledger_id=$1 AND transaction.public_id='S0M0PER8'`,
+      [personalLedgerId],
+    );
+    expect(expense.rows[0]).toEqual({ scope: "personal", owner: "U-standalone-worker", kind: "personal" });
+
+    await submit("E-standalone-shared", "共同 晚餐 300");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "rejected" });
+    await submit("E-standalone-mode", "切換共同模式");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "rejected" });
+    await submit("E-standalone-status", "配對狀態");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const status = await pool.query<{ alt_text: string }>(
+      `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+         FROM outbox_message WHERE source_webhook_event_id='E-standalone-status'`,
+    );
+    expect(status.rows[0]?.alt_text).toContain("不需要配對");
+
+    const couple = await admin.query<{ id: string }>(
+      "SELECT provision_line_group_ledger('C-standalone-can-pair')::text AS id",
+    );
+    await expect(admin.query(
+      `INSERT INTO member (ledger_id,line_user_id,display_name,membership_kind)
+       VALUES ($1,'U-standalone-worker','群組中的我','couple')`,
+      [couple.rows[0]!.id],
+    )).resolves.toMatchObject({ rowCount: 1 });
   });
 
   it("requires the partner to confirm unpairing, then archives the old ledger", async () => {
