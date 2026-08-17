@@ -490,6 +490,15 @@ async function queryPeriod(
     `分類：${categoryTotals.length === 0 ? "無" : categoryTotals.map((row) => `${row.name} ${money(row.total)}`).join("・")}`,
     ...(isMonthPeriod(command.period) ? [] : rows.rows.map(formatListRow)),
   ].join("\n");
+  if (isDayPeriod(command.period)) {
+    return applied(reply, undefined, listCard(
+      `${title}${suffix}・${rows.rows.length} 筆`,
+      rows.rows,
+      reply,
+      "依消費時間排序",
+      [{ label: "最近紀錄", text: command.filter.kind === "shared" ? "共同 最近 10筆" : "最近 10筆" }],
+    ));
+  }
   return applied(reply, undefined, infoCard({
     altText: reply,
     kicker: "DINERO 支出報表",
@@ -599,6 +608,10 @@ function periodRange(date: string, period: PeriodSelection): { start: string; en
 
 function isMonthPeriod(period: PeriodSelection): boolean {
   return typeof period === "object" || period === "month" || period === "last_month";
+}
+
+function isDayPeriod(period: PeriodSelection): boolean {
+  return period === "today" || period === "yesterday" || period === "day_before_yesterday";
 }
 
 function monthlyScopeAction(
@@ -1200,7 +1213,7 @@ function authorizeMutation(expense: ExpenseRow, memberId: string): LedgerCommand
 }
 
 function listCard(title: string, rows: readonly ListRow[], altText: string, note: string, actions: readonly { label: string; text: string }[]): LineReplyMessage {
-  const visible = rows.slice(0, 8);
+  const visible = rows.slice(0, 20);
   return infoCard({
     altText,
     kicker: "DINERO 記帳列表",

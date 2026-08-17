@@ -75,20 +75,19 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
   match = new RegExp(`^查 #${PUBLIC_ID}$`, "iu").exec(text);
   if (match) return command({ kind: "detail", publicId: match[1]!.toUpperCase() });
 
-  match = /^最近(?: (\S+))?(?: (\S+))?$/u.exec(text);
+  match = /^(?:(共同|個人|全部)\s*)?最近\s*(?:(\d+)\s*筆?)?(?:\s*(共同|個人|全部))?$/u.exec(text);
   if (match) {
-    const first = match[1];
-    const second = match[2];
-    const rawLimit = first !== undefined && /^\d+$/u.test(first) ? first : undefined;
-    const rawFilter = rawLimit === undefined ? first : second;
-    if (rawLimit === undefined && second !== undefined) {
-      return invalid("最近格式：最近、最近 5、最近 5 共同或最近 5 全部。");
+    const prefixFilter = match[1];
+    const rawLimit = match[2];
+    const suffixFilter = match[3];
+    if (prefixFilter !== undefined && suffixFilter !== undefined && prefixFilter !== suffixFilter) {
+      return invalid("最近查詢不能同時指定不同範圍。");
     }
     const limit = rawLimit === undefined ? 10 : Number(rawLimit);
     if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
       return invalid("最近筆數必須是 1 到 20。範例：最近 5");
     }
-    const filter = parseFilter(rawFilter);
+    const filter = parseFilter(prefixFilter ?? suffixFilter);
     if (filter === null || filter.kind === "tag") {
       return invalid("最近篩選可用：個人、共同或全部。範例：最近 5 共同");
     }
@@ -120,6 +119,19 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
         ? "day_before_yesterday"
         : "yesterday";
     return command({ kind: "bulk_payer", period, target: match[2] === "對方" ? "partner" : "self" });
+  }
+
+  match = /^(共同|個人|全部)\s*(今天|今日|昨天|昨日|前天)\s*(?:紀錄)?$/u.exec(text);
+  if (match) {
+    return command({ kind: "period", period: dayPeriodFromLabel(match[2]!), filter: parseNamedFilter(match[1]!) });
+  }
+  match = /^(今天|今日|昨天|昨日|前天)\s*(共同|個人|全部)\s*(?:紀錄)?$/u.exec(text);
+  if (match) {
+    return command({ kind: "period", period: dayPeriodFromLabel(match[1]!), filter: parseNamedFilter(match[2]!) });
+  }
+  match = /^(今天|今日|昨天|昨日|前天)\s*紀錄$/u.exec(text);
+  if (match) {
+    return command({ kind: "period", period: dayPeriodFromLabel(match[1]!), filter: { kind: "personal" } });
   }
 
   match = /^(共同|個人|全部)月報$/u.exec(text);
@@ -200,6 +212,11 @@ function parseCalendarMonthReport(
     period: { kind: "calendar_month", year, month },
     filter: rawFilter === undefined ? { kind: "personal" } : parseNamedFilter(rawFilter),
   });
+}
+
+function dayPeriodFromLabel(raw: string): "today" | "yesterday" | "day_before_yesterday" {
+  if (raw === "今天" || raw === "今日") return "today";
+  return raw === "前天" ? "day_before_yesterday" : "yesterday";
 }
 
 function parseNamedFilter(raw: string): Extract<CommandFilter, { kind: "all" | "shared" | "personal" }> {

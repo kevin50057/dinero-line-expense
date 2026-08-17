@@ -737,6 +737,40 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "rejected" });
   });
 
+  it("supports scope-first variable recent limits and lists day-period transactions", async () => {
+    const creates = [
+      ["E-natural-list-a", "共同 昨天 早餐 41", "RCNTA222"],
+      ["E-natural-list-b", "共同 昨天 午餐 52", "RCNTB222"],
+      ["E-natural-list-c", "共同 昨天 晚餐 63", "RCNTC222"],
+    ] as const;
+    for (const [eventId, text, publicId] of creates) {
+      await insertTextEvent(eventId, `M-${eventId}`, text);
+      await expect(processNextInboundEvent(pool, { generatePublicId: () => publicId }))
+        .resolves.toMatchObject({ outcome: "applied", publicId });
+    }
+
+    await insertTextEvent("E-natural-recent-two", "M-natural-recent-two", "共同 最近2筆");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
+    const recent = await pool.query<{ payload: unknown }>(
+      "SELECT payload_json AS payload FROM outbox_message WHERE source_webhook_event_id='E-natural-recent-two'",
+    );
+    const recentJson = JSON.stringify(recent.rows[0]?.payload);
+    expect(recentJson).toContain("RCNTC222");
+    expect(recentJson).toContain("RCNTB222");
+    expect(recentJson).not.toContain("RCNTA222");
+
+    await insertTextEvent("E-natural-yesterday-list", "M-natural-yesterday-list", "共同 昨天 紀錄");
+    await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });
+    const yesterday = await pool.query<{ payload: unknown }>(
+      "SELECT payload_json AS payload FROM outbox_message WHERE source_webhook_event_id='E-natural-yesterday-list'",
+    );
+    const yesterdayJson = JSON.stringify(yesterday.rows[0]?.payload);
+    expect(yesterdayJson).toContain("RCNTA222");
+    expect(yesterdayJson).toContain("RCNTB222");
+    expect(yesterdayJson).toContain("RCNTC222");
+    expect(yesterdayJson).toContain('"label":"編輯"');
+  });
+
   it("lets each member set a unique nickname used by later cards and reports", async () => {
     await insertTextEvent("E-nickname", "M-nickname", "設定暱稱 阿明");
     await expect(processNextInboundEvent(pool)).resolves.toMatchObject({ outcome: "applied" });

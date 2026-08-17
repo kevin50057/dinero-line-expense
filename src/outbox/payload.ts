@@ -95,7 +95,7 @@ function parseFlexComponent(value: unknown, depth: number, state: { components: 
   if (!isPlainRecord(value) || typeof value["type"] !== "string") fail();
   if (value["type"] === "box") {
     if (!hasAllowedKeys(value, ["type", "layout", "contents", "spacing", "margin", "paddingAll", "backgroundColor", "cornerRadius", "justifyContent", "flex", "action"])) fail();
-    if (!isOneOf(value["layout"], ["vertical", "horizontal", "baseline"]) || !Array.isArray(value["contents"]) || value["contents"].length > 40) fail();
+    if (!isOneOf(value["layout"], ["vertical", "horizontal", "baseline"]) || !Array.isArray(value["contents"]) || value["contents"].length > 50) fail();
     const result: Record<string, unknown> = { type: "box", layout: value["layout"], contents: value["contents"].map((item) => parseFlexComponent(item, depth + 1, state)) };
     copyOptionalStrings(value, result, ["spacing", "margin", "paddingAll", "backgroundColor", "cornerRadius"]);
     if (value["justifyContent"] !== undefined) {
