@@ -505,6 +505,17 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     expect(modeReply.rows[0]).toMatchObject({ type: "flex" });
     expect(modeReply.rows[0]?.alt_text).toContain("已切換為共同模式");
 
+    for (const [eventId, text] of [["E-mode-current-short", "目前"], ["E-mode-mode-short", "模式"]] as const) {
+      await insertTextEvent(eventId, `M-${eventId}`, text);
+      expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "noop" });
+      const currentModeReply = await pool.query<{ alt_text: string }>(
+        `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+           FROM outbox_message WHERE source_webhook_event_id=$1`,
+        [eventId],
+      );
+      expect(currentModeReply.rows[0]?.alt_text).toContain("目前是共同模式");
+    }
+
     await insertTextEvent("E-mode-shared-recent", "M-mode-shared-recent", "最近 5");
     expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
     const recentReply = await pool.query<{ alt_text: string }>(

@@ -119,7 +119,9 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
     if (filter === null || filter.kind === "tag") return invalid("分類排行篩選可用：個人、共同或全部。");
     return command({ kind: "ranking", filter });
   }
-  if (text === "目前模式") return command({ kind: "mode", scope: null });
+  if (text === "目前模式" || text === "目前" || text === "模式") {
+    return command({ kind: "mode", scope: null });
+  }
   if (text === "切換共同模式" || text === "共同模式") return command({ kind: "mode", scope: "shared" });
   if (text === "切換個人模式" || text === "個人模式") return command({ kind: "mode", scope: "personal" });
 

@@ -47,6 +47,8 @@ describe("parseLedgerCommand", () => {
     ["分類排行", { kind: "ranking", filter: { kind: "personal" } }],
     ["分類排行 共同", { kind: "ranking", filter: { kind: "shared" } }],
     ["目前模式", { kind: "mode", scope: null }],
+    ["目前", { kind: "mode", scope: null }],
+    ["模式", { kind: "mode", scope: null }],
     ["切換共同模式", { kind: "mode", scope: "shared" }],
     ["切換個人模式", { kind: "mode", scope: "personal" }],
     ["共同模式", { kind: "mode", scope: "shared" }],
