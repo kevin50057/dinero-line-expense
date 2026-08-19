@@ -238,6 +238,30 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     expect(outcomes.rows.map((row) => row.outcome_code)).toEqual(["noop", "rejected"]);
   });
 
+  it("silently ignores unrelated chat but keeps malformed-expense guidance", async () => {
+    await insertTextEvent("E-group-chatter", "M-group-chatter", "完蛋");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "noop" });
+
+    await insertTextEvent("E-private-chatter", "M-private-chatter", "完蛋", "U-ming", "user");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "noop" });
+
+    await insertTextEvent("E-explicit-no-number", "M-explicit-no-number", "共同 牛肉麵");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "noop" });
+
+    await insertTextEvent("E-group-bad-expense", "M-group-bad-expense", "牛肉麵 0");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "rejected" });
+
+    const replies = await pool.query<{ source_webhook_event_id: string }>(
+      `SELECT source_webhook_event_id FROM outbox_message
+        WHERE source_webhook_event_id IN (
+          'E-group-chatter','E-private-chatter','E-explicit-no-number','E-group-bad-expense'
+        ) ORDER BY source_webhook_event_id`,
+    );
+    expect(replies.rows.map((row) => row.source_webhook_event_id)).toEqual([
+      "E-group-bad-expense",
+    ]);
+  });
+
   it("routes read commands before create and returns recent active expenses", async () => {
     const before = await pool.query<{ count: string }>("SELECT count(*)::text AS count FROM expense_transaction");
     await insertTextEvent("E-recent", "M-recent", "最近 5");
@@ -445,6 +469,7 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     );
     expect(delivery.rows[0]?.alt_text).toContain("建立配對");
     expect(delivery.rows[0]?.alt_text).toContain("使用說明");
+    expect(delivery.rows[0]?.alt_text).toContain("群組聊天我會保持安靜");
     expect(delivery.rows[0]?.inbox_payload).toBeNull();
   });
 
@@ -479,14 +504,23 @@ describeWithPostgres("processNextInboundEvent integration", () => {
     );
     expect(modeReply.rows[0]).toMatchObject({ type: "flex" });
     expect(modeReply.rows[0]?.alt_text).toContain("已切換為共同模式");
+
+    await insertTextEvent("E-mode-shared-recent", "M-mode-shared-recent", "最近 5");
+    expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
+    const recentReply = await pool.query<{ alt_text: string }>(
+      `SELECT payload_json->'messages'->0->>'altText' AS alt_text
+         FROM outbox_message WHERE source_webhook_event_id='E-mode-shared-recent'`,
+    );
+    expect(recentReply.rows[0]?.alt_text).toContain("共同最近");
+    expect(recentReply.rows[0]?.alt_text).toContain("午餐");
   });
 
-  it("scopes default recent and monthly cards to the member who clicks", async () => {
+  it("keeps explicitly personal recent and default monthly cards actor-scoped", async () => {
     await insertTextEvent("E-mei-personal", "M-mei-personal", "個人 女友咖啡 70", "U-mei");
     expect(await processNextInboundEvent(pool, { generatePublicId: () => "ME2PERSN" }))
       .toMatchObject({ outcome: "applied", publicId: "ME2PERSN" });
 
-    for (const [eventId, text, expected] of [["E-mei-recent", "最近 5", "女友咖啡"], ["E-mei-month", "月報", "小美個人"]] as const) {
+    for (const [eventId, text, expected] of [["E-mei-recent", "個人 最近 5", "女友咖啡"], ["E-mei-month", "月報", "小美個人"]] as const) {
       await insertTextEvent(eventId, `M-${eventId}`, text, "U-mei");
       expect(await processNextInboundEvent(pool)).toMatchObject({ outcome: "applied" });
       const reply = await pool.query<{ alt_text: string }>(
@@ -555,6 +589,12 @@ describeWithPostgres("processNextInboundEvent integration", () => {
 
     expect(await submit("E-safe-create", "U-safe-owner", "建立配對"))
       .toMatchObject({ outcome: "applied" });
+    const invitationCard = await pool.query<{ payload: unknown }>(
+      `SELECT payload_json AS payload FROM outbox_message
+        WHERE source_webhook_event_id='E-safe-create'`,
+    );
+    expect(JSON.stringify(invitationCard.rows[0]?.payload)).toContain("等待對方申請");
+    expect(JSON.stringify(invitationCard.rows[0]?.payload)).toContain('"label":"對方申請配對"');
     expect(await submit("E-safe-create-again", "U-safe-owner", "建立配對"))
       .toMatchObject({ outcome: "noop" });
     expect(await submit("E-safe-self-join", "U-safe-owner", "配對"))

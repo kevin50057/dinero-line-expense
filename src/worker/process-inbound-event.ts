@@ -7,6 +7,7 @@ import {
 } from "../application/expense-reply.js";
 import { generatePublicId } from "../application/public-id.js";
 import {
+  groupWelcomeCards,
   pairingGuideCard,
   pairingInvitationCard,
   pairingJoinRequestCard,
@@ -14,6 +15,7 @@ import {
   standalonePersonalCard,
   unpairConsentCard,
 } from "../application/line-cards.js";
+import { shouldReplyToExpenseParseError } from "../application/message-reply-policy.js";
 import { inferMeal, parseExpenseMessage, parseLedgerCommand } from "../domain/index.js";
 import type { LedgerCommand, ParsedExpense, TypedTag } from "../domain/index.js";
 import type { LineReplyMessage } from "../outbox/payload.js";
@@ -157,12 +159,9 @@ async function processLifecycleEvent(
 
   if (payload.event.kind === "join") {
     const reply = [
-      "歡迎使用 DINERO 兩人記帳！",
-      "第一位輸入「建立配對」，第二位輸入「配對」提出申請。",
-      "第一位核對發送者後按「確認配對」，才會正式完成。",
-      "完成後輸入「設定暱稱 你的名字」。",
-      "預設是個人模式；約會時再輸入「切換共同模式」。",
-      "配對後可用「配對狀態」查看；解除必須雙方同意。",
+      "歡迎使用 DINERO 記帳！無關的群組聊天我會保持安靜。",
+      "個人記帳可直接私訊，不需要配對。",
+      "共同記帳請在群組由第一位建立配對邀請、第二位提出申請，再由第一位安全確認。",
       "傳送「使用說明」可查看完整功能。",
     ].join("\n");
     await enqueueReply(
@@ -172,7 +171,7 @@ async function processLifecycleEvent(
       payload.replyTokenCiphertext,
       "ledger_onboarding",
       reply,
-      pairingGuideCard(reply),
+      groupWelcomeCards(reply),
     );
     await finish(client, event, "applied");
     return processedResult(event, "applied");
@@ -353,7 +352,7 @@ async function processMessage(
   if (command.kind === "command") {
     const publicId = commandPublicId(command.command);
     const targetLedgerId = publicId === null
-      ? ledgerCommandRequiresCompletePair(command.command) && identity.membership_kind === "personal"
+      ? ledgerCommandRequiresCompletePair(command.command, identity.default_scope) && identity.membership_kind === "personal"
         ? identity.couple_ledger_id
         : null
       : await resolveAuthorizedCommandLedger(client, identity, publicId);
@@ -383,7 +382,7 @@ async function processMessage(
       await finish(client, event, "ignored_unsent");
       return processedResult(event, "ignored_unsent");
     }
-    if (ledgerCommandRequiresCompletePair(command.command)
+    if (ledgerCommandRequiresCompletePair(command.command, identity.default_scope)
         && !await hasCompletePair(client, event.ledger_id)) {
       const reply = "這是共同功能，必須先完成兩人配對。個人記帳、最近紀錄與個人月報都不需要配對。";
       await enqueueReply(client, event, identity.line_group_id, payload.replyTokenCiphertext,
@@ -400,6 +399,7 @@ async function processMessage(
         lineUserId: identity.line_user_id,
         coupleLedgerId: identity.couple_ledger_id,
         timezone: identity.timezone,
+        defaultScope: identity.default_scope,
       },
       { webhookEventId: event.webhook_event_id, eventAt: event.line_event_at },
       command.command,
@@ -422,6 +422,31 @@ async function processMessage(
     };
   }
 
+  const parsed = parseExpenseMessage(payload.message.text, {
+    eventTimestamp: event.line_event_at,
+    timezone: identity.timezone,
+    defaultScope: payload.source.chatType === "user" ? "personal" : identity.default_scope,
+  });
+  if (!parsed.ok) {
+    if (!shouldReplyToExpenseParseError({
+      input: payload.message.text,
+      errorCode: parsed.error.code,
+    })) {
+      await finish(client, event, "noop");
+      return processedResult(event, "noop");
+    }
+    await enqueueReply(
+      client,
+      event,
+      identity.line_group_id,
+      payload.replyTokenCiphertext,
+      "expense_create_rejected",
+      formatExpenseParseErrorReply(parsed.error),
+    );
+    await finish(client, event, "rejected");
+    return processedResult(event, "rejected");
+  }
+
   if (!identity.allow_bare_entry && !hasExplicitScopePrefix(payload.message.text)) {
     await enqueueReply(
       client,
@@ -430,24 +455,6 @@ async function processMessage(
       payload.replyTokenCiphertext,
       "expense_create_rejected",
       "這個帳本請明確以「共同」或「個人」開頭。",
-    );
-    await finish(client, event, "rejected");
-    return processedResult(event, "rejected");
-  }
-
-  const parsed = parseExpenseMessage(payload.message.text, {
-    eventTimestamp: event.line_event_at,
-    timezone: identity.timezone,
-    defaultScope: payload.source.chatType === "user" ? "personal" : identity.default_scope,
-  });
-  if (!parsed.ok) {
-    await enqueueReply(
-      client,
-      event,
-      identity.line_group_id,
-      payload.replyTokenCiphertext,
-      "expense_create_rejected",
-      formatExpenseParseErrorReply(parsed.error),
     );
     await finish(client, event, "rejected");
     return processedResult(event, "rejected");
@@ -1394,10 +1401,17 @@ async function hasCompletePair(client: PoolClient, ledgerId: string): Promise<bo
   return result.rows[0]?.count === "2";
 }
 
-function ledgerCommandRequiresCompletePair(command: LedgerCommand): boolean {
+function ledgerCommandRequiresCompletePair(
+  command: LedgerCommand,
+  defaultScope: "shared" | "personal",
+): boolean {
   if (command.kind === "mode") return command.scope === "shared";
   if (command.kind === "bulk_payer") return true;
-  if (command.kind === "recent" || command.kind === "period" || command.kind === "ranking") {
+  if (command.kind === "recent") {
+    return command.filter.kind === "shared"
+      || (command.filter.kind === "default" && defaultScope === "shared");
+  }
+  if (command.kind === "period" || command.kind === "ranking") {
     return command.filter.kind === "shared";
   }
   if (command.kind === "update") {

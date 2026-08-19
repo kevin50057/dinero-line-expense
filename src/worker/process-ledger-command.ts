@@ -30,6 +30,7 @@ export interface CommandActor {
   readonly lineUserId: string;
   readonly coupleLedgerId: string | null;
   readonly timezone: string;
+  readonly defaultScope: "shared" | "personal";
 }
 
 export interface CommandEvent {
@@ -89,15 +90,16 @@ export async function processLedgerCommand(
         "配對：第一位建立、第二位申請、第一位確認",
         "狀態：配對狀態",
         "解除：一人輸入解除配對，另一人輸入同意解除",
-        "記帳：牛肉麵 150 #工作（初始為個人模式）",
-        "日期時間：昨天早上 早餐 80、前天 22:00 宵夜 200",
+        "記帳：牛肉麵 150（只有項目與金額必填）",
+        "自由組合：昨天 午餐 牛肉麵 150；#標籤選填",
+        "日期時間：昨天、前天、2026/7/15、22:00、早／中／晚",
         "預訂支出：作弊 2026/9/25 香港機+酒 30141",
         "個人：個人 咖啡 80",
         "模式：切換共同模式、切換個人模式、目前模式",
         "暱稱：設定暱稱 小美、我的暱稱",
         "隱私：群組回覆全群可見，敏感的個人查詢請私訊",
         "付款人：共同交易卡片可切換，或輸入改 #編號 付款人 對方",
-        "查詢：最近 5、共同 最近 10、昨天紀錄、查月報、查 6月月報、找 關鍵字、分類排行",
+        "查詢：最近 5（依目前模式）、個人／共同 最近 10、昨天紀錄、查月報、找 關鍵字、分類排行",
         "修改：最近 5 → 點每筆右側的編輯",
         "標籤：改 #編號 標籤 #約會 #台南",
         "取消／還原：取消 #編號、還原 #編號",
@@ -116,14 +118,14 @@ export async function processLedgerCommand(
       return queryCategoryRules(client, actor);
     case "tags_help":
       {
-        const reply = "每筆會有 1 個分類、最多 1 個餐別，另可加最多 10 個情境標籤。孝親費等項目會自動加入「原生家庭」。\n範例：牛肉麵 150 #約會";
+        const reply = "標籤完全選填；不加 # 也能正常記帳。需要補充情境時，每筆最多可加 10 個標籤，例如：牛肉麵 150 #約會。孝親費等項目會自動加入「原生家庭」。";
         return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 自訂整理", title: "用標籤留下情境", rows: [
           { label: "新增時", value: "牛肉麵 150 #約會 #台北" },
           { label: "事後加入", value: "加 #編號 標籤 #約會" },
           { label: "整組修改", value: "改 #編號 標籤 #約會 #台北；輸入無可清空" },
           { label: "依標籤查詢", value: "本月 #約會" },
           { label: "自動情境", value: "孝親費、爸媽紅包等 → 原生家庭" },
-        ], note: "每筆最多 10 個自訂標籤。", actions: [{ label: "看分類", text: "分類" }] }));
+        ], note: "標籤是額外整理用途，不是記帳必填格式。", actions: [{ label: "看分類", text: "分類" }] }));
       }
     case "detail":
       return queryDetail(client, actor, command.publicId);
@@ -418,7 +420,8 @@ async function queryRecent(
   limit: number,
   filter: Extract<LedgerCommand, { kind: "recent" }>["filter"],
 ): Promise<LedgerCommandResult> {
-  const accessSql = accessibleExpenseSql(filter.kind === "tag" ? "all" : filter.kind, "$1", "$2");
+  const effectiveFilter = filter.kind === "default" ? actor.defaultScope : filter.kind;
+  const accessSql = accessibleExpenseSql(effectiveFilter, "$1", "$2");
   const result = await client.query<ListRow>(
     `SELECT public_id, amount_minor::text, description, scope::text,
             occurred_on::text, occurred_at
@@ -430,10 +433,12 @@ async function queryRecent(
       LIMIT $3`,
     [actor.coupleLedgerId, actor.lineUserId, limit],
   );
-  const scopeLabel = filter.kind === "personal" ? `${actor.displayName}個人` : filter.kind === "shared" ? "共同" : "全部";
+  const scopeLabel = effectiveFilter === "personal" ? `${actor.displayName}個人` : effectiveFilter === "shared" ? "共同" : "全部";
   if (result.rows.length === 0) {
     const reply = `${scopeLabel}目前沒有有效的記帳紀錄。`;
-    return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 記帳列表", title: `${scopeLabel}最近紀錄`, note: reply, actions: [{ label: "查看共同", text: "最近 5 共同" }, { label: "查看全部", text: "最近 5 全部" }] }));
+    return applied(reply, undefined, infoCard({ altText: reply, kicker: "DINERO 記帳列表", title: `${scopeLabel}最近紀錄`, note: reply, actions: effectiveFilter === "shared"
+      ? [{ label: "查看個人", text: "個人 最近 5" }, { label: "查看全部", text: "最近 5 全部" }]
+      : [{ label: "查看共同", text: "共同 最近 5" }, { label: "查看全部", text: "最近 5 全部" }] }));
   }
   const reply = [
     `${scopeLabel}最近 ${result.rows.length} 筆`,
@@ -441,7 +446,8 @@ async function queryRecent(
     `合計：${money(sumRows(result.rows))}`,
   ].join("\n");
   return applied(reply, undefined, listCard(`${scopeLabel}最近 ${result.rows.length} 筆`, result.rows, reply, "按輸入時間排序", [
-    { label: "我的月報", text: "本月" }, { label: "共同最近", text: "最近 5 共同" },
+    { label: effectiveFilter === "shared" ? "共同月報" : "我的月報", text: effectiveFilter === "shared" ? "共同月報" : "本月" },
+    { label: effectiveFilter === "shared" ? "個人最近" : "共同最近", text: effectiveFilter === "shared" ? "個人 最近 5" : "共同 最近 5" },
   ]));
 }
 

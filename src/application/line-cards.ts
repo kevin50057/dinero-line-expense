@@ -70,16 +70,19 @@ export function helpCards(altText: string): LineReplyFlexMessage {
         footer([{ label: "最近紀錄", text: "最近 5" }, { label: "配對狀態", text: "配對狀態" }]),
       ),
       bubble(
-        header("DINERO 快速開始", "一句話就能記帳"),
+        header("DINERO 新增支出", "一句話自由組合"),
         body([
-          text("牛肉麵 150 #約會", { size: "lg", weight: "bold", color: INK, wrap: true }),
-          text("預設記在傳送者個人帳；日期、時段和標籤都可以直接寫在同一句。", { size: "sm", color: MUTED, wrap: true, margin: "md" }),
+          text("牛肉麵 150", { size: "lg", weight: "bold", color: INK, wrap: true }),
+          text("只有「項目＋金額」必填；其他資訊都能自由加減，前綴順序也可互換。", { size: "sm", color: MUTED, wrap: true, margin: "md" }),
           separator("lg"),
-          rowBox({ label: "補登日期", value: "昨天早上 早餐 80" }),
-          rowBox({ label: "指定時間", value: "前天 22:00 宵夜 200" }),
-          rowBox({ label: "指定分類", value: "電影 320 #娛樂" }),
+          rowBox({ label: "日期與時間（選填）", value: "昨天・前天・2026/7/15・22:00" }),
+          rowBox({ label: "餐別（選填）", value: "早・中・晚・早餐・午餐・晚餐・宵夜" }),
+          rowBox({ label: "範圍與付款（選填）", value: "個人・共同・對方付" }),
+          rowBox({ label: "情境標籤（選填）", value: "#約會・#台北，可同時使用多個" }),
+          rowBox({ label: "組合範例", value: "昨天 午餐 牛肉麵 150" }),
+          rowBox({ label: "未來預訂", value: "作弊 2026/9/25 香港機+酒 30141" }),
         ]),
-        footer([{ label: "最近紀錄", text: "最近 5" }, { label: "本月報表", text: "本月" }]),
+        footer([{ label: "分類說明", text: "分類" }, { label: "標籤說明", text: "標籤" }]),
       ),
       bubble(
         header("個人與共同", "約會才切共同模式"),
@@ -99,7 +102,7 @@ export function helpCards(altText: string): LineReplyFlexMessage {
       bubble(
         header("查詢與報表", "想看什麼就直接問"),
         body([
-          rowBox({ label: "最近筆數", value: "最近 5 / 共同 最近 10" }),
+          rowBox({ label: "最近筆數", value: "最近 5 會跟目前模式；也可指定個人／共同" }),
           separator("md"),
           rowBox({ label: "指定日期", value: "昨天紀錄 / 共同昨天紀錄" }),
           separator("md"),
@@ -125,6 +128,44 @@ export function helpCards(altText: string): LineReplyFlexMessage {
           rowBox({ label: "取消 / 還原", value: "取消 #K7M2Q9TX / 還原 #K7M2Q9TX" }),
         ]),
         footer([{ label: "分類說明", text: "分類" }, { label: "標籤說明", text: "標籤" }]),
+      ),
+    ],
+  });
+}
+
+export function groupWelcomeCards(altText: string): LineReplyFlexMessage {
+  return flex(altText, {
+    type: "carousel",
+    contents: [
+      bubble(
+        header("DINERO 歡迎", "嗨，我是你們的記帳助手"),
+        body([
+          text("一句話就能記帳；平常聊天時，我會安靜不插嘴。", {
+            size: "md", weight: "bold", color: INK, wrap: true,
+          }),
+          separator("lg"),
+          rowBox({ label: "個人記帳", value: "直接私訊我：牛肉麵 150，不用配對" }),
+          separator("md"),
+          rowBox({ label: "共同記帳", value: "先在這個群組完成兩人配對" }),
+          separator("md"),
+          rowBox({ label: "查詢與修改", value: "最近 5、查月報，卡片可直接編輯" }),
+          separator("md"),
+          rowBox({ label: "需要幫忙", value: "隨時輸入「使用說明」" }),
+        ]),
+        footer([{ label: "使用說明", text: "使用說明" }, { label: "配對狀態", text: "配對狀態" }]),
+      ),
+      bubble(
+        header("DINERO 快速開始", "一起記帳，三步完成配對"),
+        body([
+          rowBox({ label: "1・建立邀請", value: "其中一人按下方「建立配對」" }),
+          separator("md"),
+          rowBox({ label: "2・對方申請", value: "另一人在邀請卡按「對方申請配對」" }),
+          separator("md"),
+          rowBox({ label: "3・安全確認", value: "建立者核對發送者，再確認指定申請碼" }),
+          separator("md"),
+          rowBox({ label: "完成後", value: "兩人各自輸入「設定暱稱 名字」" }),
+        ]),
+        footer([{ label: "建立配對", text: "建立配對" }, { label: "查看狀態", text: "配對狀態" }]),
       ),
     ],
   });
@@ -158,8 +199,17 @@ export function pairingInvitationCard(options: {
     : options.viewerRole === "candidate"
       ? "你的申請等待確認"
       : "你可以提出加入申請";
+  const title = options.viewerRole === "inviter"
+    ? (options.pendingCandidateCount ?? 0) > 0 ? "請確認配對申請" : "等待對方申請"
+    : options.viewerRole === "candidate"
+      ? "等待建立者確認"
+      : "申請加入這組配對";
   const actions: CardAction[] = options.viewerRole === "inviter"
-    ? [{ label: "取消設定", text: "取消配對設定" }, { label: "更新狀態", text: "配對狀態" }]
+    ? [
+        { label: "更新狀態", text: "配對狀態" },
+        { label: "取消設定", text: "取消配對設定" },
+        { label: "對方申請配對", text: "配對" },
+      ]
     : options.viewerRole === "candidate" && options.requestCode !== undefined
       ? [
           { label: "取消申請", text: `取消配對申請 ${options.requestCode}` },
@@ -169,7 +219,7 @@ export function pairingInvitationCard(options: {
   return infoCard({
     altText: options.altText,
     kicker: "DINERO 配對邀請",
-    title: "等待安全確認",
+    title,
     rows: [
       { label: "目前身份", value: role },
       { label: "邀請期限", value: options.expiresAt },
@@ -181,8 +231,10 @@ export function pairingInvitationCard(options: {
         : [{ label: "你的申請碼", value: options.requestCode }]),
     ],
     note: options.viewerRole === "inviter"
-      ? "請只確認你認得的那一則申請；等待中可隨時取消，且不影響你在其他群組配對。"
-      : "送出申請不會立刻配對，必須由邀請建立者確認。",
+      ? "下一步：請另一位使用者按「對方申請配對」。收到申請卡後，由你核對發送者並按「確認配對」；不認識就拒絕。"
+      : options.viewerRole === "candidate"
+        ? "申請已送出；必須由邀請建立者確認，你不能自己確認。"
+        : "按「申請配對」只會送出申請；必須由邀請建立者確認才會完成。",
     actions,
   });
 }

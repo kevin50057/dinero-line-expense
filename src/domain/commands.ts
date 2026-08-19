@@ -6,7 +6,7 @@ import type { CategoryCode, MealCode } from "./types.js";
 
 export type LedgerCommand =
   | { readonly kind: "detail"; readonly publicId: string }
-  | { readonly kind: "recent"; readonly limit: number; readonly filter: CommandFilter }
+  | { readonly kind: "recent"; readonly limit: number; readonly filter: RecentCommandFilter }
   | { readonly kind: "period"; readonly period: PeriodSelection; readonly filter: CommandFilter }
   | { readonly kind: "search"; readonly keyword: string }
   | { readonly kind: "ranking"; readonly filter: Exclude<CommandFilter, { readonly kind: "tag" }> }
@@ -33,6 +33,10 @@ export type CommandFilter =
   | { readonly kind: "shared" }
   | { readonly kind: "personal" }
   | { readonly kind: "tag"; readonly name: string };
+
+export type RecentCommandFilter =
+  | { readonly kind: "default" }
+  | Extract<CommandFilter, { readonly kind: "all" | "shared" | "personal" }>;
 
 export type UpdateChange =
   | { readonly field: "description"; readonly value: string }
@@ -92,7 +96,10 @@ export function parseLedgerCommand(input: string): ParseLedgerCommandResult {
     if (!Number.isInteger(limit) || limit < 1 || limit > 20) {
       return invalid("最近筆數必須是 1 到 20。範例：最近 5");
     }
-    const filter = parseFilter(prefixFilter ?? suffixFilter);
+    const rawFilter = prefixFilter ?? suffixFilter;
+    const filter = rawFilter === undefined
+      ? { kind: "default" } as const
+      : parseFilter(rawFilter);
     if (filter === null || filter.kind === "tag") {
       return invalid("最近篩選可用：個人、共同或全部。範例：最近 5 共同");
     }

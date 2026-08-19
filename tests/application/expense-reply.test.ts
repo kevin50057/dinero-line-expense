@@ -70,6 +70,7 @@ describe("expense replies", () => {
     );
 
     expect(payload.messages[0].type).toBe("text");
-    expect(payload.messages[0].text).toContain("牛肉麵 150 #約會");
+    expect(payload.messages[0].text).toContain("基本格式：牛肉麵 150");
+    expect(payload.messages[0].text).toContain("可選補充：昨天、22:00、午餐、共同、對方付、#約會");
   });
 });

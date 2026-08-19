@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  groupWelcomeCards,
   helpCards,
   infoCard,
   pairingInvitationCard,
@@ -12,6 +13,19 @@ import {
 import { parseLineReplyPayload } from "../../src/outbox/index.js";
 
 describe("LINE Flex card builders", () => {
+  it("builds a quiet-by-default group welcome carousel", () => {
+    const card = groupWelcomeCards("歡迎使用 DINERO");
+    const parsed = parseLineReplyPayload({ messages: [card] });
+    expect(parsed).toMatchObject({
+      messages: [{ type: "flex", contents: { type: "carousel" } }],
+    });
+    const serialized = JSON.stringify(parsed);
+    expect(serialized).toContain("嗨，我是你們的記帳助手");
+    expect(serialized).toContain("平常聊天時，我會安靜不插嘴");
+    expect(serialized).toContain('"label":"建立配對"');
+    expect(serialized).toContain('"label":"使用說明"');
+  });
+
   it("builds help carousel accepted by the outbound allowlist", () => {
     const card = helpCards("記帳與查詢說明");
     const parsed = parseLineReplyPayload({ messages: [card] });
@@ -20,6 +34,10 @@ describe("LINE Flex card builders", () => {
     });
     expect(JSON.stringify(parsed)).toContain('"style":"primary"');
     expect(JSON.stringify(parsed)).not.toContain('"style":"secondary"');
+    expect(JSON.stringify(parsed)).toContain("只有「項目＋金額」必填");
+    expect(JSON.stringify(parsed)).toContain("昨天 午餐 牛肉麵 150");
+    expect(JSON.stringify(parsed)).toContain("情境標籤（選填）");
+    expect(JSON.stringify(parsed)).toContain("作弊 2026/9/25 香港機+酒 30141");
   });
 
   it("builds a detail/report bubble accepted by the outbound allowlist", () => {
@@ -101,6 +119,12 @@ describe("LINE Flex card builders", () => {
   });
 
   it("builds safe pending-invitation and candidate-confirmation cards", () => {
+    const ownerInvitation = pairingInvitationCard({
+      altText: "已建立配對邀請",
+      expiresAt: "2026/08/19 08:02",
+      viewerRole: "inviter",
+      pendingCandidateCount: 0,
+    });
     const invitation = pairingInvitationCard({
       altText: "等待安全確認",
       expiresAt: "2026/08/18 14:00",
@@ -113,8 +137,13 @@ describe("LINE Flex card builders", () => {
       candidateName: "這則訊息的發送者",
       expiresAt: "2026/08/18 14:00",
     });
+    expect(parseLineReplyPayload({ messages: [ownerInvitation] })).toEqual({ messages: [ownerInvitation] });
     expect(parseLineReplyPayload({ messages: [invitation] })).toEqual({ messages: [invitation] });
     expect(parseLineReplyPayload({ messages: [confirmation] })).toEqual({ messages: [confirmation] });
+    expect(JSON.stringify(ownerInvitation)).toContain("等待對方申請");
+    expect(JSON.stringify(ownerInvitation)).toContain("下一步：請另一位使用者按「對方申請配對」");
+    expect(JSON.stringify(ownerInvitation)).toContain('"label":"對方申請配對"');
+    expect(JSON.stringify(ownerInvitation)).toContain('"text":"配對"');
     expect(JSON.stringify(invitation)).toContain("取消配對申請 CANDD456");
     expect(JSON.stringify(confirmation)).toContain("確認配對 CANDD456");
     expect(JSON.stringify(confirmation)).toContain("拒絕配對 CANDD456");

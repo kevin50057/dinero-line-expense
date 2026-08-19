@@ -41,7 +41,11 @@ export function formatSavedExpenseReply(data: SavedExpenseReplyData): string {
 }
 
 export function formatExpenseParseErrorReply(error: ExpenseParseError): string {
-  return `${error.message}\n範例：牛肉麵 150 #約會`;
+  return [
+    error.message,
+    "基本格式：牛肉麵 150",
+    "可選補充：昨天、22:00、午餐、共同、對方付、#約會",
+  ].join("\n");
 }
 
 export function lineTextReply(text: string): LineTextReplyPayload {

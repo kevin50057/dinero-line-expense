@@ -405,7 +405,7 @@ function parseAmountAndBody(text: string): LocalResult<AmountAndBody> {
   if (value.length === 0) {
     return failure(
       "INVALID_FORMAT",
-      "格式範例：牛肉麵 150 #約會。",
+      "格式範例：牛肉麵 150。",
     );
   }
 
@@ -479,7 +479,7 @@ function parseAmountAndBody(text: string): LocalResult<AmountAndBody> {
 
   return failure(
     "INVALID_FORMAT",
-    "格式範例：牛肉麵 150 #約會。",
+    "格式範例：牛肉麵 150。",
   );
 }
 

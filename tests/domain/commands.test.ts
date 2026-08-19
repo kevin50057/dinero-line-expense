@@ -5,13 +5,14 @@ import { parseLedgerCommand } from "../../src/domain/index.js";
 describe("parseLedgerCommand", () => {
   it.each([
     ["查 #K7M2Q9TX", { kind: "detail", publicId: "K7M2Q9TX" }],
-    ["最近", { kind: "recent", limit: 10, filter: { kind: "personal" } }],
-    ["最近 5", { kind: "recent", limit: 5, filter: { kind: "personal" } }],
+    ["最近", { kind: "recent", limit: 10, filter: { kind: "default" } }],
+    ["最近 5", { kind: "recent", limit: 5, filter: { kind: "default" } }],
+    ["個人 最近 5", { kind: "recent", limit: 5, filter: { kind: "personal" } }],
     ["最近 5 共同", { kind: "recent", limit: 5, filter: { kind: "shared" } }],
     ["共同 最近5", { kind: "recent", limit: 5, filter: { kind: "shared" } }],
     ["共同最近 10筆", { kind: "recent", limit: 10, filter: { kind: "shared" } }],
     ["最近5筆共同", { kind: "recent", limit: 5, filter: { kind: "shared" } }],
-    ["最近 10筆", { kind: "recent", limit: 10, filter: { kind: "personal" } }],
+    ["最近 10筆", { kind: "recent", limit: 10, filter: { kind: "default" } }],
     ["最近 全部", { kind: "recent", limit: 10, filter: { kind: "all" } }],
     ["本月 共同", { kind: "period", period: "month", filter: { kind: "shared" } }],
     ["本月 全部", { kind: "period", period: "month", filter: { kind: "all" } }],
